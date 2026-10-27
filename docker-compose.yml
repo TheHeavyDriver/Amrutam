@@ -1,0 +1,121 @@
+name: amrutam
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-amrutam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-amrutam}
+      POSTGRES_DB: ${POSTGRES_DB:-amrutam}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-amrutam} -d ${POSTGRES_DB:-amrutam}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    command: ['--config=/etc/otelcol/config.yml']
+    volumes:
+      - ./infra/observability/otel-collector/config.yml:/etc/otelcol/config.yml:ro
+    ports:
+      - '4317:4317'
+      - '4318:4318'
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    command: ['-config.file=/etc/tempo/tempo.yml']
+    volumes:
+      - ./infra/observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempodata:/var/tempo
+    ports:
+      - '3200:3200'
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheusdata:/prometheus
+    ports:
+      - '9090:9090'
+
+  loki:
+    image: grafana/loki:3.7.9
+    command: ['-config.file=/etc/loki/loki.yml']
+    volumes:
+      - ./infra/observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - lokidata:/loki
+    ports:
+      - '3100:3100'
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - '3001:3000'
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+  # Full containerized demo: `docker compose --profile app up --build`
+  api:
+    profiles: ['app']
+    build:
+      context: .
+      target: runtime
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      API_GLOBAL_PREFIX: api/v1
+      CORS_ORIGINS: http://localhost:3001,http://localhost:5173
+      DATABASE_URL: postgresql://${POSTGRES_USER:-amrutam}:${POSTGRES_PASSWORD:-amrutam}@db:5432/${POSTGRES_DB:-amrutam}
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+    ports:
+      - '3000:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  tempodata:
+  prometheusdata:
+  lokidata:
+  grafanadata:
