@@ -4,7 +4,7 @@ Production-grade backend for Amrutam's telemedicine platform, built to satisfy t
 
 The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap lives in [`plans/2026-10-27-amrutam-telemedicine-backend-v1.md`](plans/2026-10-27-amrutam-telemedicine-backend-v1.md).
 
-> **Current status:** Phase 0 foundations. The service boots with typed configuration, structured logging, request ids, a consistent error envelope, health probes, security headers, compression, Docker/Compose infrastructure, and a CI-ready test harness. Clinical domain work starts with the database schema (task 2).
+> **Current status:** Phase 0 foundations and the PostgreSQL clinical data model. The service boots with typed configuration, structured logging, request ids, a consistent error envelope, health probes, security headers, compression, Docker/Compose infrastructure, and a CI-ready test harness. Migrations, deterministic demo data, and database-level booking/clinical invariants are in place. The API surface is still health-only; domain endpoints land in the next phases.
 
 ## Stack
 
@@ -14,7 +14,7 @@ The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap
 | Framework   | NestJS 12 with the Fastify adapter                                         |
 | Validation  | Zod                                                                        |
 | Logging     | pino via `nestjs-pino`, JSON in production, pretty locally                 |
-| Database    | PostgreSQL 16 (wired in task 2)                                            |
+| Database    | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                         |
 | Cache/queue | Redis 7 (wired in later tasks)                                             |
 | Tests       | Vitest + SWC (decorator metadata)                                          |
 | Local infra | Docker Compose + OpenTelemetry collector, Prometheus, Grafana, Loki, Tempo |
@@ -28,6 +28,8 @@ Prerequisites: Node.js 22+, npm, Docker with Compose v2.
 cp .env.example .env
 npm install
 make up          # Postgres, Redis, and the observability stack
+make db-migrate  # apply the schema
+make db-seed     # optional deterministic demo data
 npm run start:dev
 ```
 
@@ -82,6 +84,28 @@ Every response includes an `x-request-id` header. A client-supplied value is acc
 | `make typecheck`        | `tsc --noEmit`                                    |
 | `make check`            | Lint, typecheck, and tests                        |
 | `make format`           | Prettier                                          |
+| `make db-migrate`       | Apply pending SQL migrations                      |
+| `make db-rollback`      | Roll back the latest migration                    |
+| `make db-status`        | Show applied and pending migrations               |
+| `make db-seed`          | Load deterministic demo data (development only)   |
+
+## Database
+
+PostgreSQL is the source of truth. Migrations are paired, reversible SQL files in `db/migrations/`; the runner checksums both directions, takes a PostgreSQL advisory lock, and applies each migration transactionally. An applied migration must never be edited — add a new one instead. See [ADR 0004](docs/decisions/0004-sql-first-partitioning.md) for why the project is SQL-first and how partitioning is applied.
+
+```bash
+make up
+npm run db:migrate          # apply all pending migrations
+npm run db:status           # show applied/pending files
+npm run db:rollback         # roll back one migration
+npm run db:rollback -- --steps 3
+npm run db:rollback -- --all
+npm run db:seed             # deterministic admin, doctors, patients, slots, history
+```
+
+The seed is idempotent and intended for local demos and load tests. Seeded privileged accounts have deliberately unusable password/MFA placeholders until identity is implemented; do not treat them as credentials. The seed refuses to run with `NODE_ENV=production` unless `SEED_ALLOW=true` is explicitly set.
+
+Migrations and seeds use `DATABASE_URL`. Set `POSTGRES_PORT` and `DATABASE_URL` together when changing local ports (the example defaults to 5432; a local `.env` can use another port). Production images contain the compiled migration CLI and the `db/` directory; run `node dist/database/cli.js up` before starting a new API revision.
 
 ## Configuration
 
@@ -108,10 +132,12 @@ Secrets are supplied through environment variables and are never committed.
 src/
   common/          # cross-cutting filters, logging, errors
   config/          # zod env schema and typed config service
+  database/        # migration runner, CLI, deterministic seed
   modules/health/  # liveness and readiness endpoints
   app.module.ts    # composition root
   bootstrap.ts     # startup, adapters, shutdown
   main.ts          # entrypoint
+db/migrations/     # paired, reversible SQL migrations
 test/              # end-to-end tests and helpers
 infra/             # observability configuration
 docs/decisions/    # architecture decision records

@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help install up down reset logs dev app build start test test-unit test-e2e test-cov lint typecheck format check
+.PHONY: help install up down reset logs dev app build start test test-unit test-e2e test-cov lint typecheck format check db-migrate db-rollback db-status db-seed
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -55,3 +55,15 @@ format: ## Format the codebase
 	npm run format
 
 check: lint typecheck test ## Run the full local quality gate
+
+db-migrate: ## Apply pending database migrations
+	npm run db:migrate
+
+db-rollback: ## Roll back the latest database migration
+	npm run db:rollback
+
+db-status: ## Show applied and pending database migrations
+	npm run db:status
+
+db-seed: ## Load deterministic demo data (development only)
+	npm run db:seed

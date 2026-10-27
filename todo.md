@@ -20,14 +20,14 @@ Source of truth for scope: `description.md`.
   - [x] Conventional commits + `docs/decisions/` ADR log
   - [x] Verify: one command brings the stack up; no secrets committed
 
-- [ ] **2. Clinical data model in PostgreSQL**
-  - [ ] Tables: `users`, `profiles`, `doctors`, `availability_slots`, `consultations`, `prescriptions`, `payments`, `audit_logs`, `idempotency_keys`, `outbox_events`
-  - [ ] DB invariants: unique slot occupancy, valid state transitions, non-negative amounts, FK integrity
-  - [ ] Monthly range partitions for `consultations` and `audit_logs`
-  - [ ] Partial/covering indexes for expected access paths; UUIDv7 identifiers
-  - [ ] Reversible migrations; automated partition maintenance
-  - [ ] Deterministic seed: patients, doctors, availability, historical consultations
-  - [ ] Verify: migrations up/down pass against seeded data
+- [x] **2. Clinical data model in PostgreSQL**
+  - [x] Tables: `users`, `profiles`, `doctors`, `availability_slots`, `consultations`, `prescriptions`, `payments`, `audit_logs`, `idempotency_keys`, `outbox_events`
+  - [x] DB invariants: unique slot occupancy, valid state transitions, non-negative amounts, FK integrity
+  - [x] 16 hash partitions for `consultations`; monthly range partitions for `audit_logs` (see ADR 0004)
+  - [x] Partial/covering indexes for expected access paths; UUIDv7 identifiers
+  - [x] Reversible migrations; audit partition helper pre-creates four months (scheduling lands with async jobs in task 11)
+  - [x] Deterministic seed: patients, doctors, availability, historical consultations
+  - [x] Verify: migrations up/down and re-seed pass against a fresh PostgreSQL database
 
 - [ ] **3. OpenAPI 3.1 contract**
   - [ ] Endpoints: auth, doctors, availability, bookings, consultations, prescriptions, payments, admin analytics, health
