@@ -54,6 +54,7 @@ export const envSchema = z.object({
   DATABASE_URL: z.url().default('postgresql://amrutam:amrutam@localhost:5432/amrutam'),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
   REDIS_URL: z.url().default('redis://localhost:6379'),
+  CACHE_ENABLED: booleanFromString('true'),
 
   APP_PUBLIC_URL: z.url().default('http://localhost:3000'),
 

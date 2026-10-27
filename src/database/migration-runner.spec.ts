@@ -60,6 +60,8 @@ describe('repository migrations', () => {
       '0005',
       '0006',
       '0007',
+      '0008',
+      '0009',
     ]);
 
     for (const migration of migrations) {

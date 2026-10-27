@@ -24,6 +24,9 @@ export type AppConfig = {
     url: string;
     poolMax: number;
   };
+  cache: {
+    enabled: boolean;
+  };
   redis: {
     url: string;
   };
@@ -76,6 +79,9 @@ export function loadConfiguration(rawEnv: Record<string, unknown> = process.env)
     database: {
       url: env.DATABASE_URL,
       poolMax: env.DATABASE_POOL_MAX,
+    },
+    cache: {
+      enabled: env.CACHE_ENABLED,
     },
     redis: {
       url: env.REDIS_URL,

@@ -23,6 +23,7 @@ describe('validateEnv', () => {
     expect(env.LOG_LEVEL).toBe('info');
     expect(env.DATABASE_URL).toBe('postgresql://amrutam:amrutam@localhost:5432/amrutam');
     expect(env.REDIS_URL).toBe('redis://localhost:6379');
+    expect(env.CACHE_ENABLED).toBe(true);
     expect(env.AUTH_ACCESS_TOKEN_TTL_SECONDS).toBe(900);
     expect(env.AUTH_REQUIRE_EMAIL_VERIFICATION).toBe(true);
     expect(env.RATE_LIMIT_MAX).toBe(300);

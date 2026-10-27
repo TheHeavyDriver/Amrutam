@@ -4,22 +4,22 @@ Production-grade backend for Amrutam's telemedicine platform, built to satisfy t
 
 The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap lives in [`plans/2026-10-27-amrutam-telemedicine-backend-v1.md`](plans/2026-10-27-amrutam-telemedicine-backend-v1.md).
 
-> **Current status:** Foundations, PostgreSQL clinical model, OpenAPI 3.1 contract, and the identity/audit core are implemented. The API supports registration, login, rotating refresh sessions, email verification/reset enqueueing, TOTP MFA with recovery codes, role guards, user profiles, and hash-chained audit records with an admin-only verification endpoint. Doctor discovery, booking, consultations, payments, prescriptions, and analytics are next.
+> **Current status:** Foundations, the PostgreSQL clinical model, the OpenAPI 3.1 contract, identity/audit, doctor discovery, and the booking/consultation lifecycle are implemented. The API supports registration, login, rotating refresh sessions, TOTP MFA, role/ownership checks, profiles, hash-chained audit records, cached doctor search and availability, idempotent booking, cancellation, rescheduling, join tokens, and scheduled → in-progress → completed/no-show transitions. Prescriptions, payments, analytics, and the remaining delivery/security artefacts are next.
 
 ## Stack
 
-| Concern     | Choice                                                                     |
-| ----------- | -------------------------------------------------------------------------- |
-| Runtime     | Node.js 22+ (ESM), TypeScript 6                                            |
-| Framework   | NestJS 12 with the Fastify adapter                                         |
-| Validation  | Zod                                                                        |
-| API         | OpenAPI 3.1 contract + generated TypeScript client                         |
-| Logging     | pino via `nestjs-pino`, JSON in production, pretty locally                 |
-| Database    | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                         |
-| Cache/queue | Redis 7 (wired in later tasks)                                             |
-| Tests       | Vitest + SWC (decorator metadata)                                          |
-| Local infra | Docker Compose + OpenTelemetry collector, Prometheus, Grafana, Loki, Tempo |
-| CI          | GitHub Actions (added in task 17)                                          |
+| Concern     | Choice                                                                          |
+| ----------- | ------------------------------------------------------------------------------- |
+| Runtime     | Node.js 22+ (ESM), TypeScript 6                                                 |
+| Framework   | NestJS 12 with the Fastify adapter                                              |
+| Validation  | Zod                                                                             |
+| API         | OpenAPI 3.1 contract + generated TypeScript client                              |
+| Logging     | pino via `nestjs-pino`, JSON in production, pretty locally                      |
+| Database    | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                              |
+| Cache       | Redis 7 cache-aside for public doctor discovery; fail-open, PHI is never cached |
+| Tests       | Vitest + SWC (decorator metadata)                                               |
+| Local infra | Docker Compose + OpenTelemetry collector, Prometheus, Grafana, Loki, Tempo      |
+| CI          | GitHub Actions (added in task 17)                                               |
 
 ## Quick start
 
@@ -51,30 +51,42 @@ The API listens on `http://localhost:3000`. Grafana runs at `http://localhost:30
 
 ## Endpoints
 
-| Method  | Path                               | Description                         |
-| ------- | ---------------------------------- | ----------------------------------- |
-| `GET`   | `/health`                          | Service health snapshot             |
-| `GET`   | `/health/live`                     | Liveness probe                      |
-| `GET`   | `/health/ready`                    | Readiness probe                     |
-| `POST`  | `/api/v1/auth/register`            | Register a patient                  |
-| `POST`  | `/api/v1/auth/login`               | Password login or MFA challenge     |
-| `POST`  | `/api/v1/auth/mfa/verify`          | Complete MFA and issue a session    |
-| `POST`  | `/api/v1/auth/refresh`             | Rotate a refresh token              |
-| `POST`  | `/api/v1/auth/logout`              | Revoke the current session          |
-| `POST`  | `/api/v1/auth/verify-email`        | Consume an email verification token |
-| `POST`  | `/api/v1/auth/resend-verification` | Re-enqueue email verification       |
-| `POST`  | `/api/v1/auth/forgot-password`     | Enqueue a password reset            |
-| `POST`  | `/api/v1/auth/reset-password`      | Complete a password reset           |
-| `POST`  | `/api/v1/auth/mfa/setup`           | Begin TOTP enrollment               |
-| `POST`  | `/api/v1/auth/mfa/enable`          | Confirm TOTP enrollment             |
-| `POST`  | `/api/v1/auth/mfa/disable`         | Disable TOTP MFA                    |
-| `GET`   | `/api/v1/users/me`                 | Read the current profile            |
-| `PATCH` | `/api/v1/users/me`                 | Update the current profile          |
-| `POST`  | `/api/v1/users/me/password`        | Change password                     |
-| `GET`   | `/api/v1/admin/audit-logs`         | Search audit metadata (admin)       |
-| `GET`   | `/api/v1/admin/audit-logs/verify`  | Verify the audit hash chain (admin) |
+| Method  | Path                                | Description                          |
+| ------- | ----------------------------------- | ------------------------------------ |
+| `GET`   | `/health`                           | Service health snapshot              |
+| `GET`   | `/health/live`                      | Liveness probe                       |
+| `GET`   | `/health/ready`                     | Readiness probe                      |
+| `POST`  | `/api/v1/auth/register`             | Register a patient                   |
+| `POST`  | `/api/v1/auth/login`                | Password login or MFA challenge      |
+| `POST`  | `/api/v1/auth/mfa/verify`           | Complete MFA and issue a session     |
+| `POST`  | `/api/v1/auth/refresh`              | Rotate a refresh token               |
+| `POST`  | `/api/v1/auth/logout`               | Revoke the current session           |
+| `POST`  | `/api/v1/auth/verify-email`         | Consume an email verification token  |
+| `POST`  | `/api/v1/auth/resend-verification`  | Re-enqueue email verification        |
+| `POST`  | `/api/v1/auth/forgot-password`      | Enqueue a password reset             |
+| `POST`  | `/api/v1/auth/reset-password`       | Complete a password reset            |
+| `POST`  | `/api/v1/auth/mfa/setup`            | Begin TOTP enrollment                |
+| `POST`  | `/api/v1/auth/mfa/enable`           | Confirm TOTP enrollment              |
+| `POST`  | `/api/v1/auth/mfa/disable`          | Disable TOTP MFA                     |
+| `GET`   | `/api/v1/users/me`                  | Read the current profile             |
+| `PATCH` | `/api/v1/users/me`                  | Update the current profile           |
+| `POST`  | `/api/v1/users/me/password`         | Change password                      |
+| `GET`   | `/api/v1/doctors`                   | Search verified doctors              |
+| `GET`   | `/api/v1/doctors/{id}`              | Read a verified doctor profile       |
+| `GET`   | `/api/v1/doctors/{id}/availability` | List bookable slots                  |
+| `POST`  | `/api/v1/bookings`                  | Reserve a slot (patient, idempotent) |
+| `GET`   | `/api/v1/bookings`                  | List visible consultations           |
+| `GET`   | `/api/v1/bookings/{id}`             | Read a consultation                  |
+| `POST`  | `/api/v1/bookings/{id}/cancel`      | Cancel a consultation (idempotent)   |
+| `POST`  | `/api/v1/bookings/{id}/reschedule`  | Move a consultation (idempotent)     |
+| `POST`  | `/api/v1/bookings/{id}/join-token`  | Issue a short-lived join token       |
+| `POST`  | `/api/v1/bookings/{id}/start`       | Start a consultation (doctor)        |
+| `POST`  | `/api/v1/bookings/{id}/complete`    | Complete a consultation (doctor)     |
+| `POST`  | `/api/v1/bookings/{id}/no-show`     | Mark a no-show (doctor/admin)        |
+| `GET`   | `/api/v1/admin/audit-logs`          | Search audit metadata (admin)        |
+| `GET`   | `/api/v1/admin/audit-logs/verify`   | Verify the audit hash chain (admin)  |
 
-Public routes are health, registration, login, refresh, email/password recovery, and MFA challenge verification. Every other route requires a bearer access token; admin routes additionally require the `admin` role.
+Public routes are health, registration, login, refresh, email/password recovery, MFA challenge verification, and doctor discovery/availability. Every other route requires a bearer access token; booking and consultation routes additionally enforce role and resource ownership. State-changing booking routes require an `Idempotency-Key` header.
 
 Health routes are intentionally served outside the `/api/v1` prefix so orchestrators can probe them without versioning. All other routes live under `/api/v1`.
 
@@ -169,6 +181,7 @@ Configuration is validated at startup with Zod; invalid values fail fast with a 
 | `DATABASE_URL`                                     | local Postgres          | PostgreSQL connection string                                   |
 | `DATABASE_POOL_MAX`                                | `10`                    | PostgreSQL pool size                                           |
 | `REDIS_URL`                                        | local Redis             | Redis connection string                                        |
+| `CACHE_ENABLED`                                    | `true`                  | Cache public doctor discovery; tests disable it                |
 | `APP_PUBLIC_URL`                                   | `http://localhost:3000` | Public base URL used in links                                  |
 | `JWT_ACCESS_SECRET`                                | required                | Access-token HMAC key, 32+ characters                          |
 | `JWT_MFA_SECRET`                                   | required                | Separate MFA challenge-token key                               |
@@ -186,6 +199,7 @@ Secrets are supplied through environment variables and are never committed or gi
 
 ```
 src/
+  cache/           # fail-open Redis cache-aside service
   common/          # filters, guards, auth decorators, security primitives, logging
   config/          # zod env schema and typed config service
   database/        # pool, migration runner, CLI, deterministic seed

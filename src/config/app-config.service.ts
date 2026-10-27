@@ -22,6 +22,10 @@ export class AppConfigService {
     return this.configService.get('database', { infer: true });
   }
 
+  get cache(): AppConfig['cache'] {
+    return this.configService.get('cache', { infer: true });
+  }
+
   get redis(): AppConfig['redis'] {
     return this.configService.get('redis', { infer: true });
   }

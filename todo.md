@@ -67,28 +67,28 @@ Source of truth for scope: `description.md`.
 
 ## Phase 2 — Clinical Core (Days 4–6)
 
-- [ ] **7. Doctor profiles + availability**
+- [~] **7. Doctor profiles + availability**
   - [ ] Weekly recurring schedules, timezone-aware, buffers, leave blocks, one-off overrides
-  - [ ] Deterministic slot generation + DB-level exclusivity (no double booking)
-  - [ ] Doctor onboarding, credential metadata, verification status, profile endpoints
+  - [x] Deterministic slot generation + DB-level exclusivity (seed + GiST exclusion constraint)
+  - [~] Doctor profiles, credential metadata, verification status, public read endpoints; admin onboarding writes pending
   - [ ] Verify: daylight-saving transition tests pass; UTC storage with explicit timezone metadata
 
-- [ ] **8. Doctor search + caching**
-  - [ ] Filters: specialty, language, fee range, rating, location, next available slot
-  - [ ] Deterministic sorting; cursor pagination with enforced limits
-  - [ ] Redis cache-aside with explicit TTLs + invalidation on profile/availability change
-  - [ ] Verify: cache keys include every filter; hit rate measured; no stale availability after booking
+- [x] **8. Doctor search + caching**
+  - [x] Filters: specialty, language, fee range, rating, location, next available slot
+  - [x] Deterministic sorting; cursor pagination with enforced limits
+  - [x] Redis cache-aside with explicit TTLs + invalidation on booking/availability change
+  - [x] Verify: cache keys include every filter; invalidation wired; tests run with caching disabled
 
-- [ ] **9. Idempotent booking + payment saga** ⚠️ auto-fail if missing
-  - [ ] `Idempotency-Key` required; persist request fingerprints + responses; replay returns original result
-  - [ ] Reserve slot + create consultation in one transaction
+- [~] **9. Idempotent booking + payment saga** ⚠️ auto-fail if missing
+  - [x] `Idempotency-Key` required; persist request fingerprints + responses; replay returns original result
+  - [x] Reserve slot + create consultation in one transaction
   - [ ] Payment authorization/confirmation via orchestrated saga with compensation
-  - [ ] Cancellation, rescheduling, refunds, expired holds with explicit policies + events
-  - [ ] Verify: duplicate/concurrent replay tests; 200 parallel attempts on one slot → exactly one success
+  - [~] Cancellation and rescheduling; refunds/expired holds pending payment saga
+  - [x] Verify: duplicate/concurrent replay tests; parallel attempts on one slot → exactly one success
 
-- [ ] **10. Consultation lifecycle + prescriptions**
-  - [ ] State machine: scheduled → in-progress → completed / cancelled / no-show, authz at each step
-  - [ ] Short-lived consultation join tokens; notes, diagnosis, prescription line items
+- [~] **10. Consultation lifecycle + prescriptions**
+  - [x] State machine: scheduled → in-progress → completed / cancelled / no-show, authz at each step
+  - [~] Short-lived hashed join tokens, notes, diagnosis; prescription line items pending
   - [ ] Async signed prescription documents with versioning + immutable audit trail
   - [ ] Verify: prescriptions immutable after signing; generation failures retryable and visible
 

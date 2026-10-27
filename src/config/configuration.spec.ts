@@ -40,6 +40,7 @@ describe('loadConfiguration', () => {
     expect(config.http.corsOrigins).toEqual(['https://example.com']);
     expect(config.service.name).toBe('amrutam-api');
     expect(config.database.url).toContain('postgresql://');
+    expect(config.cache.enabled).toBe(true);
     expect(config.auth.accessTokenTtlSeconds).toBe(900);
     expect(config.auth.secrets.encryptionKey).toBe(SECRETS.AUTH_ENCRYPTION_KEY);
     expect(config.http.rateLimit.max).toBe(300);
