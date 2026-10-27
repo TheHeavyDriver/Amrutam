@@ -1,4 +1,5 @@
 import { Controller, Get, Header } from '@nestjs/common';
+import { Public } from '../../common/auth/public.decorator.js';
 import { AppConfigService } from '../../config/app-config.service.js';
 
 export interface HealthResponse {
@@ -10,6 +11,7 @@ export interface HealthResponse {
   timestamp: string;
 }
 
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(private readonly config: AppConfigService) {}

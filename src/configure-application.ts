@@ -1,7 +1,9 @@
 import compress from '@fastify/compress';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppConfigService } from './config/app-config.service.js';
+import { ErrorCodes } from './common/errors/error-codes.js';
 import { HEALTH_ROUTES } from './modules/health/health.routes.js';
 
 export async function configureApplication(
@@ -27,12 +29,26 @@ export async function configureApplication(
       'RateLimit-Remaining',
       'RateLimit-Reset',
       'Retry-After',
+      'Idempotency-Replayed',
     ],
     maxAge: 86_400,
   });
 
   await app.register(helmet);
   await app.register(compress, { global: true, threshold: 1024 });
+  await app.register(rateLimit, {
+    global: true,
+    max: config.http.rateLimit.max,
+    timeWindow: config.http.rateLimit.windowSeconds * 1000,
+    hook: 'onRequest',
+    errorResponseBuilder: (request) => ({
+      error: {
+        code: ErrorCodes.TOO_MANY_REQUESTS,
+        message: 'Too many requests. Try again later.',
+        requestId: request.id,
+      },
+    }),
+  });
 
   const fastify = app.getHttpAdapter().getInstance();
 

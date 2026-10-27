@@ -26,6 +26,10 @@ export class AppConfigService {
     return this.configService.get('redis', { infer: true });
   }
 
+  get auth(): AppConfig['auth'] {
+    return this.configService.get('auth', { infer: true });
+  }
+
   get logging(): AppConfig['logging'] {
     return this.configService.get('logging', { infer: true });
   }

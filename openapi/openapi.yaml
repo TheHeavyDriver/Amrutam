@@ -2068,7 +2068,7 @@ components:
           format: email
         verificationRequired:
           type: boolean
-          const: true
+          description: True when the account must verify its email before signing in.
         message:
           type: string
     LoginRequest:
@@ -2176,7 +2176,8 @@ components:
           type: string
         code:
           type: string
-          pattern: '^[0-9]{6}$'
+          pattern: '^(?:[0-9]{6}|[A-Z2-9]{5}-[A-Z2-9]{5})$'
+          description: A 6-digit TOTP code or a one-time recovery code.
     MfaCodeRequest:
       type: object
       additionalProperties: false
@@ -2196,7 +2197,8 @@ components:
           maxLength: 128
         code:
           type: string
-          pattern: '^[0-9]{6}$'
+          pattern: '^(?:[0-9]{6}|[A-Z2-9]{5}-[A-Z2-9]{5})$'
+          description: A current TOTP code or an unused recovery code.
     MfaSetupResponse:
       type: object
       additionalProperties: false

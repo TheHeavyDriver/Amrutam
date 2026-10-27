@@ -1,27 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfiguration } from './configuration.js';
 
+const SECRETS = {
+  JWT_ACCESS_SECRET: 'test-access-secret-that-is-at-least-32-characters',
+  JWT_MFA_SECRET: 'test-mfa-secret-that-is-at-least-32-characters',
+  AUTH_TOKEN_PEPPER: 'test-pepper-that-is-at-least-32-characters',
+  AUTH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+};
+
 describe('loadConfiguration', () => {
   it('uses pretty logs in development by default', () => {
-    const config = loadConfiguration({ NODE_ENV: 'development' });
+    const config = loadConfiguration({ ...SECRETS, NODE_ENV: 'development' });
 
     expect(config.logging.pretty).toBe(true);
   });
 
   it('uses JSON logs in production by default', () => {
-    const config = loadConfiguration({ NODE_ENV: 'production' });
+    const config = loadConfiguration({ ...SECRETS, NODE_ENV: 'production' });
 
     expect(config.logging.pretty).toBe(false);
   });
 
   it('honours an explicit LOG_PRETTY override', () => {
-    const config = loadConfiguration({ NODE_ENV: 'production', LOG_PRETTY: 'true' });
+    const config = loadConfiguration({ ...SECRETS, NODE_ENV: 'production', LOG_PRETTY: 'true' });
 
     expect(config.logging.pretty).toBe(true);
   });
 
   it('maps validated environment values into the typed config', () => {
     const config = loadConfiguration({
+      ...SECRETS,
       NODE_ENV: 'test',
       PORT: '4000',
       CORS_ORIGINS: 'https://example.com',
@@ -32,5 +40,8 @@ describe('loadConfiguration', () => {
     expect(config.http.corsOrigins).toEqual(['https://example.com']);
     expect(config.service.name).toBe('amrutam-api');
     expect(config.database.url).toContain('postgresql://');
+    expect(config.auth.accessTokenTtlSeconds).toBe(900);
+    expect(config.auth.secrets.encryptionKey).toBe(SECRETS.AUTH_ENCRYPTION_KEY);
+    expect(config.http.rateLimit.max).toBe(300);
   });
 });

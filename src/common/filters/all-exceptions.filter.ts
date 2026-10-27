@@ -3,6 +3,7 @@ import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { PinoLogger } from 'nestjs-pino';
 import type { ApiErrorBody } from '../errors/api-error.js';
+import { ApiException } from '../errors/api-exception.js';
 import { ErrorCodes } from '../errors/error-codes.js';
 
 const DEFAULT_CODES: Partial<Record<number, string>> = {
@@ -63,6 +64,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ...(normalized.details === undefined ? {} : { details: normalized.details }),
       },
     };
+
+    if (exception instanceof ApiException && exception.retryAfterSeconds !== undefined) {
+      response.header('Retry-After', String(exception.retryAfterSeconds));
+    }
 
     response.status(status).send(body);
   }

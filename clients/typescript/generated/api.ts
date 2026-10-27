@@ -52,7 +52,8 @@ export type RegisterRequest = {
 export type RegistrationResponse = {
     userId: string;
     email: string;
-    verificationRequired: true;
+    /** True when the account must verify its email before signing in. */
+    verificationRequired: boolean;
     message: string;
 };
 export type LoginRequest = {
@@ -104,6 +105,7 @@ export type ResetPasswordRequest = {
 };
 export type MfaChallengeVerifyRequest = {
     mfaToken: string;
+    /** A 6-digit TOTP code or a one-time recovery code. */
     code: string;
 };
 export type MfaSetupResponse = {
@@ -122,6 +124,7 @@ export type MfaEnableResponse = {
 };
 export type MfaDisableRequest = {
     password: string;
+    /** A current TOTP code or an unused recovery code. */
     code: string;
 };
 export type User = {

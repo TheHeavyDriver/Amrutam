@@ -2,15 +2,17 @@ import 'dotenv/config';
 import { createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import type { PoolClient, QueryResultRow } from 'pg';
+import { encryptSecret } from '../common/security/encryption.js';
+import { hashPassword } from '../common/security/password.js';
 import { deterministicUuid } from './ids.js';
 
 const IST_OFFSET_MINUTES = 330;
 const DAY_MS = 86_400_000;
 
-// Demo-only material. Task 5 replaces these with real Argon2id hashes and
-// encrypted TOTP secrets. They are deliberately unusable as credentials.
-const SEED_PASSWORD_HASH = 'disabled:seeded-account-requires-auth-setup';
-const SEED_MFA_SECRET = 'seed-placeholder:not-a-real-encrypted-secret';
+// Local demo material only. The seed refuses to run in production unless
+// SEED_ALLOW=true, and these values must never be reused in a real deployment.
+const SEED_PASSWORD = 'DemoPass!2026';
+const SEED_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 const SEED_VERIFIED_AT = new Date('2026-01-15T00:00:00.000Z');
 
 interface DoctorSeed {
@@ -333,8 +335,9 @@ async function upsertUser(
     id: string;
     email: string;
     role: 'patient' | 'doctor' | 'admin';
+    passwordHash: string;
     mfaEnabled: boolean;
-    mfaSecret: string | null;
+    mfaSecretEncrypted: string | null;
   },
 ): Promise<string> {
   const rows = await query<{ id: string }>(
@@ -342,18 +345,30 @@ async function upsertUser(
     `
       INSERT INTO users (
         id, email, password_hash, role, status, email_verified_at,
-        mfa_enabled, mfa_secret_encrypted
+        mfa_enabled, mfa_secret_encrypted, mfa_pending_secret_encrypted,
+        failed_login_attempts, locked_until
       )
-      VALUES ($1, $2, $3, $4, 'active', now(), $5, $6)
+      VALUES ($1, $2, $3, $4, 'active', now(), $5, $6, NULL, 0, NULL)
       ON CONFLICT (email) DO UPDATE SET
+        password_hash = EXCLUDED.password_hash,
         role = EXCLUDED.role,
         status = EXCLUDED.status,
         email_verified_at = EXCLUDED.email_verified_at,
         mfa_enabled = EXCLUDED.mfa_enabled,
-        mfa_secret_encrypted = EXCLUDED.mfa_secret_encrypted
+        mfa_secret_encrypted = EXCLUDED.mfa_secret_encrypted,
+        mfa_pending_secret_encrypted = NULL,
+        failed_login_attempts = 0,
+        locked_until = NULL
       RETURNING id
     `,
-    [input.id, input.email, SEED_PASSWORD_HASH, input.role, input.mfaEnabled, input.mfaSecret],
+    [
+      input.id,
+      input.email,
+      input.passwordHash,
+      input.role,
+      input.mfaEnabled,
+      input.mfaSecretEncrypted,
+    ],
   );
 
   const row = rows[0];
@@ -727,6 +742,15 @@ async function seed(): Promise<void> {
     throw new Error('DATABASE_URL is required to seed the database');
   }
 
+  const encryptionKey = process.env.AUTH_ENCRYPTION_KEY;
+
+  if (!encryptionKey) {
+    throw new Error('AUTH_ENCRYPTION_KEY is required to encrypt seeded MFA secrets');
+  }
+
+  const passwordHash = await hashPassword(SEED_PASSWORD);
+  const mfaSecretEncrypted = encryptSecret(SEED_TOTP_SECRET, encryptionKey);
+
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
@@ -750,8 +774,9 @@ async function seed(): Promise<void> {
       id: deterministicUuid('user:admin'),
       email: 'admin@amrutam.local',
       role: 'admin',
+      passwordHash,
       mfaEnabled: true,
-      mfaSecret: SEED_MFA_SECRET,
+      mfaSecretEncrypted,
     });
 
     await upsertProfile(client, {
@@ -767,8 +792,9 @@ async function seed(): Promise<void> {
         id: deterministicUuid(`user:doctor:${index}`),
         email: doctor.email,
         role: 'doctor',
+        passwordHash,
         mfaEnabled: true,
-        mfaSecret: SEED_MFA_SECRET,
+        mfaSecretEncrypted,
       });
 
       await upsertProfile(client, {
@@ -789,8 +815,9 @@ async function seed(): Promise<void> {
         id: deterministicUuid(`user:patient:${index}`),
         email: patient.email,
         role: 'patient',
+        passwordHash,
         mfaEnabled: false,
-        mfaSecret: null,
+        mfaSecretEncrypted: null,
       });
 
       await upsertProfile(client, {
@@ -841,7 +868,9 @@ async function seed(): Promise<void> {
             `${summary.payments} payments.`
         : 'Seed completed.',
     );
-    write('Authentication is wired in task 5; seeded password hashes are intentionally disabled.');
+    write(`Demo password for all seeded accounts: ${SEED_PASSWORD}`);
+    write(`TOTP secret for seeded admin/doctor accounts: ${SEED_TOTP_SECRET}`);
+    write('These credentials are for local development only.');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;

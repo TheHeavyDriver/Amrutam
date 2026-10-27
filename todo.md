@@ -49,19 +49,19 @@ Source of truth for scope: `description.md`.
 
 ## Phase 1 — Identity and Audit (Days 2–3)
 
-- [ ] **5. Identity, MFA, RBAC, sessions**
-  - [ ] Registration, login, email verification
-  - [ ] Argon2id hashing; short-lived access tokens; rotating refresh tokens with reuse detection
-  - [ ] TOTP MFA for doctors/admins; recovery codes; step-up auth for sensitive actions
-  - [ ] Role/permission guards, ownership checks, account lockout, session revocation
-  - [ ] Per-route rate limits
-  - [ ] Verify: full role/resource authorization matrix tests pass; deny by default
+- [~] **5. Identity, MFA, RBAC, sessions**
+  - [x] Registration, login, email verification (token encrypted into the outbox; provider worker still pending)
+  - [x] Argon2id hashing; short-lived access tokens; rotating refresh tokens with reuse detection
+  - [x] TOTP MFA for doctors/admins; hashed recovery codes; step-up auth still pending
+  - [x] Role/permission guards, ownership checks, account lockout, session revocation
+  - [~] Global per-IP rate limit; endpoint-specific limits and distributed store still pending
+  - [~] Verify: auth/session/MFA/audit e2e suite passes; full role/resource matrix expands with clinical routes
 
-- [ ] **6. Tamper-evident audit + PHI-safe logging**
-  - [ ] Capture actor, action, resource, timestamp, request ID, source IP, before/after hashes
-  - [ ] Hash-chain audit entries; retention + access rules documented
-  - [ ] Redaction layer strips tokens, passwords, clinical free text from logs
-  - [ ] Verify: every mutation writes an audit record; chain verification test passes; no PHI in logs
+- [~] **6. Tamper-evident audit + PHI-safe logging**
+  - [x] Capture actor, action, resource, timestamp, request ID, source IP, before/after hashes
+  - [x] Hash-chain audit entries; admin-only search and chain verification
+  - [x] Pino redaction for credentials/tokens; audit metadata remains PHI-free
+  - [~] Verify: chain/append-only tests pass; add log-redaction assertions and document retention
 
 ---
 
