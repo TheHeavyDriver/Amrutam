@@ -4,7 +4,7 @@ Production-grade backend for Amrutam's telemedicine platform, built to satisfy t
 
 The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap lives in [`plans/2026-10-27-amrutam-telemedicine-backend-v1.md`](plans/2026-10-27-amrutam-telemedicine-backend-v1.md).
 
-> **Current status:** Phase 0 foundations and the PostgreSQL clinical data model. The service boots with typed configuration, structured logging, request ids, a consistent error envelope, health probes, security headers, compression, Docker/Compose infrastructure, and a CI-ready test harness. Migrations, deterministic demo data, and database-level booking/clinical invariants are in place. The API surface is still health-only; domain endpoints land in the next phases.
+> **Current status:** Phase 0 foundations, the PostgreSQL clinical data model, and the complete OpenAPI 3.1 contract. The service boots with typed configuration, structured logging, request ids, a consistent error envelope, health probes, security headers, compression, Docker/Compose infrastructure, and a CI-ready test harness. Migrations, deterministic demo data, database-level booking/clinical invariants, and a generated TypeScript client are in place. The runtime API is still health-only; domain controllers land next.
 
 ## Stack
 
@@ -13,6 +13,7 @@ The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap
 | Runtime     | Node.js 22+ (ESM), TypeScript 6                                            |
 | Framework   | NestJS 12 with the Fastify adapter                                         |
 | Validation  | Zod                                                                        |
+| API         | OpenAPI 3.1 contract + generated TypeScript client                         |
 | Logging     | pino via `nestjs-pino`, JSON in production, pretty locally                 |
 | Database    | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                         |
 | Cache/queue | Redis 7 (wired in later tasks)                                             |
@@ -88,6 +89,30 @@ Every response includes an `x-request-id` header. A client-supplied value is acc
 | `make db-rollback`      | Roll back the latest migration                    |
 | `make db-status`        | Show applied and pending migrations               |
 | `make db-seed`          | Load deterministic demo data (development only)   |
+| `npm run api:validate`  | Lint the OpenAPI 3.1 contract                     |
+| `npm run api:generate`  | Regenerate the TypeScript client                  |
+| `npm run api:check`     | Validate the contract and typecheck the client    |
+
+## API contract
+
+The source of truth is [`openapi/openapi.yaml`](openapi/openapi.yaml). It covers health, auth/MFA, profiles, doctor discovery and availability, bookings and consultation lifecycle, payments and signed webhooks, prescriptions, admin verification, analytics, and audit search.
+
+Conventions are defined once in the contract:
+
+- bearer access tokens, rotating refresh tokens, and server-side role/ownership checks;
+- required `Idempotency-Key` headers on unsafe clinical and payment writes;
+- opaque cursor pagination with a 100-row cap;
+- the shared `{ error: { code, message, requestId, details? } }` envelope;
+- `X-Request-Id`, rate-limit headers, and `Retry-After` on throttled responses;
+- RFC 3339 UTC timestamps and integer minor-unit money.
+
+```bash
+npm run api:validate              # Redocly lint against the recommended rules
+npm run api:generate              # refresh clients/typescript/generated/api.ts
+npm run api:check                 # validate + typecheck the generated client
+```
+
+Generated types and one function per operation are committed under [`clients/typescript`](clients/typescript/README.md), so contract drift is reviewable in diffs.
 
 ## Database
 
@@ -138,6 +163,8 @@ src/
   bootstrap.ts     # startup, adapters, shutdown
   main.ts          # entrypoint
 db/migrations/     # paired, reversible SQL migrations
+openapi/           # OpenAPI 3.1 contract
+clients/typescript/# generated typed API client
 test/              # end-to-end tests and helpers
 infra/             # observability configuration
 docs/decisions/    # architecture decision records

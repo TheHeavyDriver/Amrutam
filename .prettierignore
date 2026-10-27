@@ -3,6 +3,7 @@ dist
 coverage
 package-lock.json
 *.log
+clients/typescript/generated
 
 # Assignment inputs are left untouched
 description.md

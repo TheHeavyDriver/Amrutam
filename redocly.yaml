@@ -1,0 +1,9 @@
+extends:
+  - recommended
+
+rules:
+  # Localhost is intentional for the development server; production URLs are
+  # supplied by deployment configuration rather than the contract.
+  no-server-example.com: off
+  # Probes report liveness/readiness, not client errors.
+  operation-4xx-response: off

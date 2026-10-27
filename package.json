@@ -30,6 +30,10 @@
     "db:seed": "tsx src/database/seed.ts",
     "db:migrate:prod": "node dist/database/cli.js up",
     "db:status:prod": "node dist/database/cli.js status",
+    "api:validate": "redocly lint openapi/openapi.yaml --format=stylish",
+    "api:generate": "oazapfts openapi/openapi.yaml clients/typescript/generated/api.ts --enumStyle=union --useUnknown",
+    "api:typecheck": "tsc --noEmit -p clients/typescript/tsconfig.json",
+    "api:check": "npm run api:validate && npm run api:typecheck",
     "prepare": "husky"
   },
   "dependencies": {
@@ -57,6 +61,8 @@
     "@nestjs/cli": "12.0.10",
     "@nestjs/schematics": "12.0.10",
     "@nestjs/testing": "12.2.0",
+    "@oazapfts/runtime": "1.2.0",
+    "@redocly/cli": "2.71.1",
     "@swc/core": "1.16.20",
     "@types/node": "26.6.5",
     "@types/pg": "8.23.1",
@@ -66,13 +72,15 @@
     "globals": "17.13.0",
     "husky": "9.1.7",
     "lint-staged": "17.6.0",
+    "oazapfts": "7.5.0",
     "pino-pretty": "13.2.0",
     "prettier": "3.9.10",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.1",
     "unplugin-swc": "2.0.0",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
   },
   "lint-staged": {
     "*.ts": [

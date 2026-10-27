@@ -1,0 +1,3215 @@
+openapi: 3.1.0
+info:
+  title: Amrutam Telemedicine API
+  version: 1.0.0
+  summary: Telemedicine booking, consultation, prescription, payment, and audit APIs.
+  description: |
+    Contract for the Amrutam telemedicine backend. All non-health routes are
+    served under `/api/v1`; probes remain at `/health`, `/health/live`, and
+    `/health/ready`.
+
+    **Authentication.** Protected operations use a short-lived bearer access
+    token. Refresh tokens rotate on every use; replaying a rotated token revokes
+    the session family. Doctor and admin accounts require TOTP MFA. Role and
+    resource ownership are enforced server-side; hiding a route is not an
+    authorization control.
+
+    **Writes and idempotency.** Operations marked with the `Idempotency-Key`
+    header require a caller-generated key of 8–255 characters. The key is scoped
+    to the authenticated actor and route. Replaying a request with the same
+    fingerprint returns the original response and sets `Idempotency-Replayed:
+    true`. Reusing a key with a different body returns `422
+    IDEMPOTENCY_KEY_REUSED`. Concurrent duplicates may return `409
+    IDEMPOTENCY_IN_PROGRESS`.
+
+    **Pagination.** List endpoints use opaque forward cursors. Pass
+    `page.nextCursor` as `cursor`; a null cursor means no further pages. Limits
+    default to 20 and are capped at 100.
+
+    **Errors.** Every error uses the shared envelope with a stable machine code,
+    a human-readable message, the request id, and optional field details.
+
+    **Correlation and limits.** Every response includes `X-Request-Id`. Rate
+    limited responses include `RateLimit-Limit`, `RateLimit-Remaining`,
+    `RateLimit-Reset`, and `Retry-After`. Clients must treat limits as
+    server-controlled and back off on `429`.
+
+    **Clinical data.** Timestamps are RFC 3339 UTC values. Money is integer minor
+    units in the stated ISO 4217 currency. Audit records contain hashes and
+    metadata, never raw clinical free text. Client-supplied user agents and IPs
+    are untrusted metadata.
+  contact:
+    name: Amrutam Platform Engineering
+    email: platform@amrutam.local
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+tags:
+  - name: Health
+    description: Liveness and readiness probes. These routes are not versioned.
+  - name: Auth
+    description: Registration, verification, sessions, password reset, and TOTP MFA.
+  - name: Users
+    description: The authenticated caller's profile and credentials.
+  - name: Doctors
+    description: Public doctor discovery and availability.
+  - name: Bookings
+    description: Slot reservation and consultation lifecycle.
+  - name: Payments
+    description: Consultation payment intents, confirmation, refunds, and provider callbacks.
+  - name: Prescriptions
+    description: Versioned prescriptions and signed documents.
+  - name: Admin
+    description: Doctor verification, analytics, and audit access. Admin role required.
+  - name: Webhooks
+    description: Signed provider callbacks. Not authenticated with bearer tokens.
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Service health snapshot
+      security: []
+      responses:
+        '200':
+          description: The process is running.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: The process is alive.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Checks required dependencies. Returns 503 while the service cannot safely receive traffic.
+      security: []
+      responses:
+        '200':
+          description: Dependencies are ready.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      summary: Register a patient account
+      description: Creates a pending patient account and sends an email verification token. Doctors are onboarded through the admin workflow.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created; email verification required.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Authenticate with email and password
+      description: Returns a session, or an MFA challenge when the account requires a TOTP code. Repeated failures trigger temporary lockout.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session issued, or MFA challenge returned.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '423':
+          $ref: '#/components/responses/Locked'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshSession
+      summary: Rotate a refresh token
+      description: Invalidates the presented refresh token and returns a new token pair. Reuse of a rotated token revokes the session family.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: New token pair.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke a refresh-token session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/verify-email:
+    post:
+      tags: [Auth]
+      operationId: verifyEmail
+      summary: Verify an email address
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+      responses:
+        '200':
+          description: Email verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/resend-verification:
+    post:
+      tags: [Auth]
+      operationId: resendVerification
+      summary: Resend an email verification link
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: Request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [Auth]
+      operationId: forgotPassword
+      summary: Request a password reset
+      description: Always returns the same response so account existence is not disclosed.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: Request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/reset-password:
+    post:
+      tags: [Auth]
+      operationId: resetPassword
+      summary: Complete a password reset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Password reset; all sessions are revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/mfa/verify:
+    post:
+      tags: [Auth]
+      operationId: verifyMfaChallenge
+      summary: Complete login with a TOTP code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaChallengeVerifyRequest'
+      responses:
+        '200':
+          description: MFA accepted; session issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/mfa/setup:
+    post:
+      tags: [Auth]
+      operationId: setupMfa
+      summary: Begin TOTP MFA enrollment
+      description: Doctor and admin accounts only. The secret is returned once and must be stored encrypted by the server.
+      responses:
+        '200':
+          description: TOTP enrollment material.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaSetupResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/mfa/enable:
+    post:
+      tags: [Auth]
+      operationId: enableMfa
+      summary: Confirm TOTP enrollment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaCodeRequest'
+      responses:
+        '200':
+          description: MFA enabled and recovery codes issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaEnableResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/mfa/disable:
+    post:
+      tags: [Auth]
+      operationId: disableMfa
+      summary: Disable TOTP MFA
+      description: Requires the current password and a valid TOTP code. Not permitted for active doctor/admin accounts if policy requires MFA.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MfaDisableRequest'
+      responses:
+        '200':
+          description: MFA disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      operationId: getCurrentUser
+      summary: Read the authenticated user
+      responses:
+        '200':
+          description: Current user and profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags: [Users]
+      operationId: updateCurrentUser
+      summary: Update the authenticated user's profile
+      description: Email and role changes are not self-service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Updated user and profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/users/me/password:
+    post:
+      tags: [Users]
+      operationId: changePassword
+      summary: Change the authenticated user's password
+      description: Revokes all other sessions on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          description: Password changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/doctors:
+    get:
+      tags: [Doctors]
+      operationId: listDoctors
+      summary: Search verified doctors
+      description: Only verified doctors are returned. Results use deterministic sorting with a cursor.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/Specialization'
+        - $ref: '#/components/parameters/Language'
+        - $ref: '#/components/parameters/City'
+        - $ref: '#/components/parameters/MinFeeCents'
+        - $ref: '#/components/parameters/MaxFeeCents'
+        - $ref: '#/components/parameters/AvailableFrom'
+        - $ref: '#/components/parameters/AvailableTo'
+        - $ref: '#/components/parameters/DoctorSort'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Doctor page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/doctors/{doctorId}:
+    get:
+      tags: [Doctors]
+      operationId: getDoctor
+      summary: Read a verified doctor profile
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/DoctorId'
+      responses:
+        '200':
+          description: Doctor details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/doctors/{doctorId}/availability:
+    get:
+      tags: [Doctors]
+      operationId: listDoctorAvailability
+      summary: List a doctor's bookable slots
+      description: Returns UTC slots. Defaults to the next 14 days when no range is supplied.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/DoctorId'
+        - $ref: '#/components/parameters/AvailabilityFrom'
+        - $ref: '#/components/parameters/AvailabilityTo'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Availability page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings:
+    post:
+      tags: [Bookings]
+      operationId: createBooking
+      summary: Reserve a slot and create a consultation
+      description: Patient-only. A slot can back at most one consultation; the database enforces exclusive occupancy.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+      responses:
+        '201':
+          description: Consultation created and slot reserved.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Bookings]
+      operationId: listBookings
+      summary: List consultations visible to the caller
+      description: Patients see their own consultations; doctors see consultations assigned to them; admins may filter across the platform.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationStatusFilter'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Consultation page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}:
+    get:
+      tags: [Bookings]
+      operationId: getBooking
+      summary: Read a consultation
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      responses:
+        '200':
+          description: Consultation details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/cancel:
+    post:
+      tags: [Bookings]
+      operationId: cancelBooking
+      summary: Cancel a consultation
+      description: Patient or admin. Terminal consultations cannot be cancelled.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelBookingRequest'
+      responses:
+        '200':
+          description: Consultation cancelled.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/reschedule:
+    post:
+      tags: [Bookings]
+      operationId: rescheduleBooking
+      summary: Move a consultation to another slot
+      description: Reserving the new slot and releasing the old claim is transactional. Only scheduled consultations can move.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleBookingRequest'
+      responses:
+        '200':
+          description: Consultation rescheduled.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/join-token:
+    post:
+      tags: [Bookings]
+      operationId: createJoinToken
+      summary: Issue a short-lived consultation join token
+      description: Patient or assigned doctor. Tokens are hashed at rest and are not reusable after expiry.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      responses:
+        '200':
+          description: Join token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/start:
+    post:
+      tags: [Bookings]
+      operationId: startConsultation
+      summary: Start a consultation
+      description: Assigned doctor only. Transition is scheduled → in_progress.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Consultation started.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/complete:
+    post:
+      tags: [Bookings]
+      operationId: completeConsultation
+      summary: Complete a consultation
+      description: Assigned doctor only. Transition is in_progress → completed.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteConsultationRequest'
+      responses:
+        '200':
+          description: Consultation completed.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/no-show:
+    post:
+      tags: [Bookings]
+      operationId: markNoShow
+      summary: Mark a consultation as a no-show
+      description: Assigned doctor or admin. Only scheduled consultations can be marked no-show.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoShowRequest'
+      responses:
+        '200':
+          description: Consultation marked no-show.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consultation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/payments:
+    post:
+      tags: [Payments]
+      operationId: createPaymentIntent
+      summary: Create a payment intent for a consultation
+      description: Patient only. At most one active payment exists per consultation.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+      responses:
+        '201':
+          description: Payment intent created.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentIntentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Payments]
+      operationId: listConsultationPayments
+      summary: List payments for a consultation
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+      responses:
+        '200':
+          description: Payment history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/payments/{paymentId}:
+    get:
+      tags: [Payments]
+      operationId: getPayment
+      summary: Read a payment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+      responses:
+        '200':
+          description: Payment details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/payments/{paymentId}/confirm:
+    post:
+      tags: [Payments]
+      operationId: confirmPayment
+      summary: Confirm and capture a payment
+      description: Patient or admin. Provider webhooks can perform the same transition; both paths are idempotent.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Payment captured.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/payments/{paymentId}/refund:
+    post:
+      tags: [Payments]
+      operationId: refundPayment
+      summary: Refund a captured payment
+      description: Admin only. Partial refunds accumulate and cannot exceed the captured amount.
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefundRequest'
+      responses:
+        '200':
+          description: Refund recorded.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/webhooks/payments/{provider}:
+    post:
+      tags: [Webhooks]
+      operationId: paymentWebhook
+      summary: Receive a signed payment provider callback
+      description: Signature verified against the provider secret. Event ids are deduplicated.
+      security:
+        - webhookSignature: []
+      parameters:
+        - $ref: '#/components/parameters/PaymentProviderPath'
+        - $ref: '#/components/parameters/WebhookSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentWebhookRequest'
+      responses:
+        '200':
+          description: Event accepted or already processed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/bookings/{consultationId}/prescriptions:
+    post:
+      tags: [Prescriptions]
+      operationId: createPrescription
+      summary: Create a draft prescription
+      description: Assigned doctor only. Items may only change before signing.
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePrescriptionRequest'
+      responses:
+        '201':
+          description: Draft prescription created.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prescription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    get:
+      tags: [Prescriptions]
+      operationId: listConsultationPrescriptions
+      summary: List prescriptions for a consultation
+      parameters:
+        - $ref: '#/components/parameters/ConsultationId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Prescription page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrescriptionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/prescriptions/{prescriptionId}:
+    get:
+      tags: [Prescriptions]
+      operationId: getPrescription
+      summary: Read a prescription
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+      responses:
+        '200':
+          description: Prescription details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prescription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      tags: [Prescriptions]
+      operationId: updatePrescription
+      summary: Edit a draft prescription
+      description: Assigned doctor only. Signed and voided prescriptions are immutable.
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePrescriptionRequest'
+      responses:
+        '200':
+          description: Draft updated.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prescription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/prescriptions/{prescriptionId}/sign:
+    post:
+      tags: [Prescriptions]
+      operationId: signPrescription
+      summary: Sign a prescription and generate its document
+      description: Assigned doctor only. Signing is idempotent; the original signed artifact is returned on replay.
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Prescription signed.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prescription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/prescriptions/{prescriptionId}/void:
+    post:
+      tags: [Prescriptions]
+      operationId: voidPrescription
+      summary: Void a signed prescription
+      description: Assigned doctor or admin. The signed artifact remains auditable; only void metadata is added.
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoidPrescriptionRequest'
+      responses:
+        '200':
+          description: Prescription voided.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prescription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/prescriptions/{prescriptionId}/document:
+    get:
+      tags: [Prescriptions]
+      operationId: getPrescriptionDocument
+      summary: Get a short-lived signed prescription document URL
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+      responses:
+        '200':
+          description: Document link and checksum.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrescriptionDocument'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/doctors:
+    get:
+      tags: [Admin]
+      operationId: listDoctorsForAdmin
+      summary: List doctors by verification state
+      parameters:
+        - $ref: '#/components/parameters/DoctorVerificationFilter'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Doctor administration page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorDetailListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/doctors/{doctorId}/verification:
+    patch:
+      tags: [Admin]
+      operationId: updateDoctorVerification
+      summary: Update a doctor's verification status
+      parameters:
+        - $ref: '#/components/parameters/DoctorId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DoctorVerificationRequest'
+      responses:
+        '200':
+          description: Doctor verification updated.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/analytics/overview:
+    get:
+      tags: [Admin]
+      operationId: getAnalyticsOverview
+      summary: High-level platform metrics
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Overview metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsOverview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/analytics/consultations:
+    get:
+      tags: [Admin]
+      operationId: getConsultationAnalytics
+      summary: Consultation volume and outcome time series
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Interval'
+      responses:
+        '200':
+          description: Consultation time series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsultationsAnalytics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/analytics/revenue:
+    get:
+      tags: [Admin]
+      operationId: getRevenueAnalytics
+      summary: Captured, refunded, and net revenue time series
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Interval'
+      responses:
+        '200':
+          description: Revenue time series.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevenueAnalytics'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/analytics/doctor-utilization:
+    get:
+      tags: [Admin]
+      operationId: getDoctorUtilization
+      summary: Slot and consultation utilization by doctor
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/DoctorIdFilter'
+      responses:
+        '200':
+          description: Doctor utilization rows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DoctorUtilizationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/analytics/specialties:
+    get:
+      tags: [Admin]
+      operationId: getSpecialtyAnalytics
+      summary: Consultation and revenue totals by specialty
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Specialty totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecialtyAnalyticsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/audit-logs:
+    get:
+      tags: [Admin]
+      operationId: listAuditLogs
+      summary: Search append-only audit records
+      description: Metadata only. Clinical free text is never stored in audit logs.
+      parameters:
+        - $ref: '#/components/parameters/AuditActorId'
+        - $ref: '#/components/parameters/AuditAction'
+        - $ref: '#/components/parameters/AuditResourceType'
+        - $ref: '#/components/parameters/AuditResourceId'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Audit page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/admin/audit-logs/verify:
+    get:
+      tags: [Admin]
+      operationId: verifyAuditChain
+      summary: Verify the audit hash chain
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Chain verification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditChainVerification'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token issued by `/api/v1/auth/login` or MFA verification.
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: HMAC signature over the raw request body using the provider secret.
+  headers:
+    XRequestId:
+      description: Correlation id echoed from the request or generated by the server.
+      schema:
+        type: string
+    IdempotencyReplayed:
+      description: True when the response was replayed from a stored idempotency record.
+      schema:
+        type: boolean
+    RateLimitLimit:
+      description: Request quota for the current window.
+      schema:
+        type: integer
+        minimum: 0
+    RateLimitRemaining:
+      description: Requests remaining in the current window.
+      schema:
+        type: integer
+        minimum: 0
+    RateLimitReset:
+      description: Seconds until the current rate-limit window resets.
+      schema:
+        type: integer
+        minimum: 0
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 0
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque forward cursor from a previous page.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 500
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum records to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    From:
+      name: from
+      in: query
+      required: false
+      description: Inclusive lower bound. Defaults are endpoint-specific.
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: false
+      description: Exclusive upper bound. Defaults are endpoint-specific.
+      schema:
+        type: string
+        format: date-time
+    Query:
+      name: query
+      in: query
+      required: false
+      description: Free-text search over doctor name, specialization, and bio.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    Specialization:
+      name: specialization
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 2
+        maxLength: 120
+    Language:
+      name: language
+      in: query
+      required: false
+      description: ISO 639-1 language code.
+      schema:
+        type: string
+        pattern: '^[a-z]{2}$'
+    City:
+      name: city
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    MinFeeCents:
+      name: minFeeCents
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+    MaxFeeCents:
+      name: maxFeeCents
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+    AvailableFrom:
+      name: availableFrom
+      in: query
+      required: false
+      description: Return doctors with at least one available slot on or after this time.
+      schema:
+        type: string
+        format: date-time
+    AvailableTo:
+      name: availableTo
+      in: query
+      required: false
+      description: Upper bound paired with availableFrom.
+      schema:
+        type: string
+        format: date-time
+    AvailabilityFrom:
+      name: from
+      in: query
+      required: false
+      description: Inclusive start time.
+      schema:
+        type: string
+        format: date-time
+    AvailabilityTo:
+      name: to
+      in: query
+      required: false
+      description: Exclusive end time.
+      schema:
+        type: string
+        format: date-time
+    DoctorSort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [rating_desc, fee_asc, fee_desc, next_available]
+        default: rating_desc
+    DoctorId:
+      name: doctorId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DoctorIdFilter:
+      name: doctorId
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    DoctorVerificationFilter:
+      name: verificationStatus
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/DoctorVerificationStatus'
+    ConsultationId:
+      name: consultationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConsultationStatusFilter:
+      name: status
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/ConsultationStatus'
+    PaymentId:
+      name: paymentId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PrescriptionId:
+      name: prescriptionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PaymentProviderPath:
+      name: provider
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/PaymentProvider'
+    Interval:
+      name: interval
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/AnalyticsInterval'
+    AuditActorId:
+      name: actorId
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    AuditAction:
+      name: action
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    AuditResourceType:
+      name: resourceType
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 120
+    AuditResourceId:
+      name: resourceId
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Caller-generated key scoped to the authenticated actor, method, and route.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 255
+        pattern: '^[A-Za-z0-9._:-]+$'
+    WebhookSignature:
+      name: X-Webhook-Signature
+      in: header
+      required: true
+      description: Hex-encoded HMAC-SHA256 of the raw body.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+  responses:
+    BadRequest:
+      description: Malformed request or invalid query parameters.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, invalid, expired, or revoked authentication.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated but not allowed to access this resource.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: The resource does not exist or is not visible to the caller.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: The request conflicts with current state, an active idempotency record, or a uniqueness rule.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: Semantically invalid input, invalid state transition, or idempotency-key reuse.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Locked:
+      description: The account is temporarily locked after repeated failed logins.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        RateLimit-Limit:
+          $ref: '#/components/headers/RateLimitLimit'
+        RateLimit-Remaining:
+          $ref: '#/components/headers/RateLimitRemaining'
+        RateLimit-Reset:
+          $ref: '#/components/headers/RateLimitReset'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Unexpected server failure. The request id is safe to share when reporting it.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: A required dependency is unavailable or the process is shutting down.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+        code:
+          type: [string, 'null']
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, requestId]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              examples: [VALIDATION_ERROR, SLOT_UNAVAILABLE, IDEMPOTENCY_KEY_REUSED]
+            message:
+              type: string
+            requestId:
+              type: string
+            details:
+              oneOf:
+                - type: array
+                  items:
+                    $ref: '#/components/schemas/ErrorDetail'
+                - type: object
+                  additionalProperties: true
+    PageInfo:
+      type: object
+      additionalProperties: false
+      required: [hasMore, nextCursor]
+      properties:
+        hasMore:
+          type: boolean
+        nextCursor:
+          type: [string, 'null']
+    UserRole:
+      type: string
+      enum: [patient, doctor, admin]
+    UserStatus:
+      type: string
+      enum: [pending, active, suspended, deleted]
+    Gender:
+      type: string
+      enum: [female, male, non_binary, prefer_not_to_say]
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, status, fullName, mfaEnabled, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        fullName:
+          type: string
+        mfaEnabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          email,
+          role,
+          status,
+          emailVerifiedAt,
+          mfaEnabled,
+          fullName,
+          locale,
+          timezone,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          $ref: '#/components/schemas/UserRole'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        emailVerifiedAt:
+          type: [string, 'null']
+          format: date-time
+        mfaEnabled:
+          type: boolean
+        fullName:
+          type: string
+        dateOfBirth:
+          type: [string, 'null']
+          format: date
+        phone:
+          type: [string, 'null']
+        gender:
+          oneOf:
+            - $ref: '#/components/schemas/Gender'
+            - type: 'null'
+        locale:
+          type: string
+        timezone:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    Money:
+      type: object
+      additionalProperties: false
+      required: [amountCents, currency]
+      properties:
+        amountCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, fullName, phone, acceptedTerms]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: At least 12 characters. Common and breached passwords are rejected.
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        phone:
+          type: string
+          pattern: '^\+[1-9][0-9]{7,14}$'
+        dateOfBirth:
+          type: [string, 'null']
+          format: date
+        gender:
+          oneOf:
+            - $ref: '#/components/schemas/Gender'
+            - type: 'null'
+        acceptedTerms:
+          type: boolean
+          const: true
+    RegistrationResponse:
+      type: object
+      additionalProperties: false
+      required: [userId, email, verificationRequired, message]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        verificationRequired:
+          type: boolean
+          const: true
+        message:
+          type: string
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [accessToken, tokenType, accessTokenExpiresIn, refreshToken, refreshTokenExpiresIn, user]
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          const: Bearer
+        accessTokenExpiresIn:
+          type: integer
+          minimum: 1
+          description: Seconds until the access token expires.
+        refreshToken:
+          type: string
+        refreshTokenExpiresIn:
+          type: integer
+          minimum: 1
+          description: Seconds until the refresh token expires.
+        user:
+          $ref: '#/components/schemas/UserSummary'
+    MfaChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [mfaRequired, mfaToken, expiresIn]
+      properties:
+        mfaRequired:
+          type: boolean
+          const: true
+        mfaToken:
+          type: string
+        expiresIn:
+          type: integer
+          minimum: 1
+    LoginResponse:
+      oneOf:
+        - $ref: '#/components/schemas/SessionResponse'
+        - $ref: '#/components/schemas/MfaChallengeResponse'
+    RefreshTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    MessageResponse:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message:
+          type: string
+    EmailRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 16
+          maxLength: 500
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          minLength: 16
+          maxLength: 500
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+    MfaChallengeVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, code]
+      properties:
+        mfaToken:
+          type: string
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+    MfaCodeRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+    MfaDisableRequest:
+      type: object
+      additionalProperties: false
+      required: [password, code]
+      properties:
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+    MfaSetupResponse:
+      type: object
+      additionalProperties: false
+      required: [secret, otpauthUri, issuer, accountName]
+      properties:
+        secret:
+          type: string
+          description: Base32 TOTP secret. Display once; store encrypted server-side.
+        otpauthUri:
+          type: string
+          format: uri
+        issuer:
+          type: string
+        accountName:
+          type: string
+    MfaEnableResponse:
+      type: object
+      additionalProperties: false
+      required: [message, recoveryCodes]
+      properties:
+        message:
+          type: string
+        recoveryCodes:
+          type: array
+          minItems: 8
+          items:
+            type: string
+    UpdateProfileRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        dateOfBirth:
+          type: [string, 'null']
+          format: date
+        phone:
+          type: [string, 'null']
+          pattern: '^\+[1-9][0-9]{7,14}$'
+        gender:
+          oneOf:
+            - $ref: '#/components/schemas/Gender'
+            - type: 'null'
+        locale:
+          type: string
+          minLength: 2
+          maxLength: 16
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+        avatarUrl:
+          type: [string, 'null']
+          format: uri
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 128
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 128
+    DoctorVerificationStatus:
+      type: string
+      enum: [pending, verified, rejected, suspended]
+    DoctorSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          fullName,
+          specialization,
+          subSpecialties,
+          languages,
+          yearsExperience,
+          consultationFee,
+          rating,
+          ratingCount,
+          acceptingNewPatients,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialization:
+          type: string
+        subSpecialties:
+          type: array
+          items:
+            type: string
+        languages:
+          type: array
+          items:
+            type: string
+        yearsExperience:
+          type: integer
+          minimum: 0
+        consultationFee:
+          $ref: '#/components/schemas/Money'
+        city:
+          type: [string, 'null']
+        rating:
+          type: number
+          minimum: 0
+          maximum: 5
+        ratingCount:
+          type: integer
+          minimum: 0
+        acceptingNewPatients:
+          type: boolean
+        nextAvailableAt:
+          type: [string, 'null']
+          format: date-time
+        bio:
+          type: [string, 'null']
+    DoctorDetail:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          fullName,
+          specialization,
+          subSpecialties,
+          languages,
+          yearsExperience,
+          consultationFee,
+          rating,
+          ratingCount,
+          acceptingNewPatients,
+          licenseNumber,
+          verificationStatus,
+          timezone,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialization:
+          type: string
+        subSpecialties:
+          type: array
+          items:
+            type: string
+        languages:
+          type: array
+          items:
+            type: string
+        yearsExperience:
+          type: integer
+          minimum: 0
+        consultationFee:
+          $ref: '#/components/schemas/Money'
+        city:
+          type: [string, 'null']
+        rating:
+          type: number
+          minimum: 0
+          maximum: 5
+        ratingCount:
+          type: integer
+          minimum: 0
+        acceptingNewPatients:
+          type: boolean
+        nextAvailableAt:
+          type: [string, 'null']
+          format: date-time
+        bio:
+          type: [string, 'null']
+        licenseNumber:
+          type: string
+        verificationStatus:
+          $ref: '#/components/schemas/DoctorVerificationStatus'
+        verifiedAt:
+          type: [string, 'null']
+          format: date-time
+        timezone:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    DoctorListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DoctorSummary'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    DoctorDetailListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DoctorDetail'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    DoctorVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/DoctorVerificationStatus'
+        reason:
+          type: string
+          maxLength: 500
+    SlotStatus:
+      type: string
+      enum: [available, held, booked, blocked]
+    AvailabilitySlot:
+      type: object
+      additionalProperties: false
+      required: [id, doctorId, startsAt, endsAt, status, durationMinutes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        doctorId:
+          type: string
+          format: uuid
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/SlotStatus'
+        durationMinutes:
+          type: integer
+          minimum: 1
+    AvailabilityListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailabilitySlot'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    ConsultationStatus:
+      type: string
+      enum: [scheduled, in_progress, completed, cancelled, no_show]
+    PatientSummary:
+      type: object
+      additionalProperties: false
+      required: [id, fullName]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+    Consultation:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          patientId,
+          doctorId,
+          slotId,
+          status,
+          scheduledStart,
+          scheduledEnd,
+          fee,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        patientId:
+          type: string
+          format: uuid
+        doctorId:
+          type: string
+          format: uuid
+        slotId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ConsultationStatus'
+        scheduledStart:
+          type: string
+          format: date-time
+        scheduledEnd:
+          type: string
+          format: date-time
+        fee:
+          $ref: '#/components/schemas/Money'
+        startedAt:
+          type: [string, 'null']
+          format: date-time
+        endedAt:
+          type: [string, 'null']
+          format: date-time
+        cancelledAt:
+          type: [string, 'null']
+          format: date-time
+        cancellationReason:
+          type: [string, 'null']
+        noShowAt:
+          type: [string, 'null']
+          format: date-time
+        diagnosis:
+          type: [string, 'null']
+        notes:
+          type: [string, 'null']
+        patient:
+          $ref: '#/components/schemas/PatientSummary'
+        doctor:
+          $ref: '#/components/schemas/DoctorSummary'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ConsultationListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Consultation'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    CreateBookingRequest:
+      type: object
+      additionalProperties: false
+      required: [slotId]
+      properties:
+        slotId:
+          type: string
+          format: uuid
+        notes:
+          type: string
+          maxLength: 2000
+    CancelBookingRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+    RescheduleBookingRequest:
+      type: object
+      additionalProperties: false
+      required: [slotId]
+      properties:
+        slotId:
+          type: string
+          format: uuid
+    CompleteConsultationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        diagnosis:
+          type: string
+          maxLength: 2000
+        notes:
+          type: string
+          maxLength: 4000
+    NoShowRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        notes:
+          type: string
+          maxLength: 1000
+    JoinTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [token, expiresAt, joinUrl]
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        joinUrl:
+          type: string
+          format: uri
+    PaymentStatus:
+      type: string
+      enum: [pending, authorized, captured, failed, refunded, partially_refunded]
+    PaymentProvider:
+      type: string
+      enum: [mock, razorpay, stripe]
+    Payment:
+      type: object
+      additionalProperties: false
+      required:
+        [id, consultationId, patientId, amount, currency, status, provider, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        consultationId:
+          type: string
+          format: uuid
+        patientId:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          minimum: 1
+        amountRefunded:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        provider:
+          $ref: '#/components/schemas/PaymentProvider'
+        providerReference:
+          type: [string, 'null']
+        failureCode:
+          type: [string, 'null']
+        authorizedAt:
+          type: [string, 'null']
+          format: date-time
+        capturedAt:
+          type: [string, 'null']
+          format: date-time
+        refundedAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PaymentIntentResponse:
+      type: object
+      additionalProperties: false
+      required: [payment]
+      properties:
+        payment:
+          $ref: '#/components/schemas/Payment'
+        clientSecret:
+          type: [string, 'null']
+          description: Provider client secret, when the provider requires client-side confirmation.
+    CreatePaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [provider]
+      properties:
+        provider:
+          $ref: '#/components/schemas/PaymentProvider'
+        returnUrl:
+          type: string
+          format: uri
+    PaymentListResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+    RefundRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: Omit for a full refund of the remaining captured amount.
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+    PaymentWebhookRequest:
+      type: object
+      additionalProperties: false
+      required: [eventId, eventType, paymentId, providerReference, occurredAt]
+      properties:
+        eventId:
+          type: string
+          maxLength: 200
+        eventType:
+          type: string
+          enum: [payment.authorized, payment.captured, payment.failed, payment.refunded]
+        paymentId:
+          type: string
+          format: uuid
+        providerReference:
+          type: string
+          maxLength: 200
+        amount:
+          type: integer
+          minimum: 1
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        occurredAt:
+          type: string
+          format: date-time
+    PrescriptionStatus:
+      type: string
+      enum: [draft, signed, voided]
+    PrescriptionItem:
+      type: object
+      additionalProperties: false
+      required: [id, medicationName, dosage, frequency, durationDays, sortOrder]
+      properties:
+        id:
+          type: string
+          format: uuid
+        medicationName:
+          type: string
+        dosage:
+          type: string
+        frequency:
+          type: string
+        durationDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+        instructions:
+          type: [string, 'null']
+        sortOrder:
+          type: integer
+          minimum: 0
+    PrescriptionItemInput:
+      type: object
+      additionalProperties: false
+      required: [medicationName, dosage, frequency, durationDays]
+      properties:
+        medicationName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        dosage:
+          type: string
+          minLength: 1
+          maxLength: 100
+        frequency:
+          type: string
+          minLength: 1
+          maxLength: 100
+        durationDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+        instructions:
+          type: string
+          maxLength: 500
+    PrescriptionDocument:
+      type: object
+      additionalProperties: false
+      required: [url, sha256, expiresAt]
+      properties:
+        url:
+          type: string
+          format: uri
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        expiresAt:
+          type: string
+          format: date-time
+    Prescription:
+      type: object
+      additionalProperties: false
+      required:
+        [id, consultationId, doctorId, patientId, status, version, items, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        consultationId:
+          type: string
+          format: uuid
+        doctorId:
+          type: string
+          format: uuid
+        patientId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/PrescriptionStatus'
+        version:
+          type: integer
+          minimum: 1
+        diagnosis:
+          type: [string, 'null']
+        notes:
+          type: [string, 'null']
+        issuedAt:
+          type: [string, 'null']
+          format: date-time
+        signedAt:
+          type: [string, 'null']
+          format: date-time
+        voidedAt:
+          type: [string, 'null']
+          format: date-time
+        voidReason:
+          type: [string, 'null']
+        document:
+          oneOf:
+            - $ref: '#/components/schemas/PrescriptionDocument'
+            - type: 'null'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrescriptionItem'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreatePrescriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [diagnosis, items]
+      properties:
+        diagnosis:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        notes:
+          type: string
+          maxLength: 4000
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/PrescriptionItemInput'
+    UpdatePrescriptionRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        diagnosis:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        notes:
+          type: [string, 'null']
+          maxLength: 4000
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/PrescriptionItemInput'
+    VoidPrescriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 3
+          maxLength: 500
+    PrescriptionListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Prescription'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    AnalyticsInterval:
+      type: string
+      enum: [day, week, month]
+    AnalyticsRange:
+      type: object
+      additionalProperties: false
+      required: [from, to]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+    AnalyticsOverview:
+      type: object
+      additionalProperties: false
+      required: [range, consultations, revenue, doctors, patients]
+      properties:
+        range:
+          $ref: '#/components/schemas/AnalyticsRange'
+        consultations:
+          type: object
+          additionalProperties: false
+          required: [total, completed, cancelled, noShow, completionRate]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            completed:
+              type: integer
+              minimum: 0
+            cancelled:
+              type: integer
+              minimum: 0
+            noShow:
+              type: integer
+              minimum: 0
+            completionRate:
+              type: number
+              minimum: 0
+              maximum: 1
+        revenue:
+          type: object
+          additionalProperties: false
+          required: [capturedCents, refundedCents, netCents, currency]
+          properties:
+            capturedCents:
+              type: integer
+              minimum: 0
+            refundedCents:
+              type: integer
+              minimum: 0
+            netCents:
+              type: integer
+            currency:
+              type: string
+              pattern: '^[A-Z]{3}$'
+        doctors:
+          type: object
+          additionalProperties: false
+          required: [active, verified]
+          properties:
+            active:
+              type: integer
+              minimum: 0
+            verified:
+              type: integer
+              minimum: 0
+        patients:
+          type: object
+          additionalProperties: false
+          required: [total, new]
+          properties:
+            total:
+              type: integer
+              minimum: 0
+            new:
+              type: integer
+              minimum: 0
+    ConsultationBucket:
+      type: object
+      additionalProperties: false
+      required: [bucketStart, total, completed, cancelled, noShow]
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+        total:
+          type: integer
+          minimum: 0
+        completed:
+          type: integer
+          minimum: 0
+        cancelled:
+          type: integer
+          minimum: 0
+        noShow:
+          type: integer
+          minimum: 0
+    ConsultationsAnalytics:
+      type: object
+      additionalProperties: false
+      required: [range, interval, buckets]
+      properties:
+        range:
+          $ref: '#/components/schemas/AnalyticsRange'
+        interval:
+          $ref: '#/components/schemas/AnalyticsInterval'
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConsultationBucket'
+    RevenueBucket:
+      type: object
+      additionalProperties: false
+      required: [bucketStart, capturedCents, refundedCents, netCents]
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+        capturedCents:
+          type: integer
+          minimum: 0
+        refundedCents:
+          type: integer
+          minimum: 0
+        netCents:
+          type: integer
+    RevenueAnalytics:
+      type: object
+      additionalProperties: false
+      required: [range, interval, currency, buckets]
+      properties:
+        range:
+          $ref: '#/components/schemas/AnalyticsRange'
+        interval:
+          $ref: '#/components/schemas/AnalyticsInterval'
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevenueBucket'
+    DoctorUtilization:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          doctorId,
+          fullName,
+          specialization,
+          availableSlots,
+          bookedSlots,
+          completedConsultations,
+          utilizationRate,
+        ]
+      properties:
+        doctorId:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialization:
+          type: string
+        availableSlots:
+          type: integer
+          minimum: 0
+        bookedSlots:
+          type: integer
+          minimum: 0
+        completedConsultations:
+          type: integer
+          minimum: 0
+        utilizationRate:
+          type: number
+          minimum: 0
+          maximum: 1
+    DoctorUtilizationResponse:
+      type: object
+      additionalProperties: false
+      required: [range, data]
+      properties:
+        range:
+          $ref: '#/components/schemas/AnalyticsRange'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/DoctorUtilization'
+    SpecialtyMetric:
+      type: object
+      additionalProperties: false
+      required: [specialization, consultations, revenueCents]
+      properties:
+        specialization:
+          type: string
+        consultations:
+          type: integer
+          minimum: 0
+        revenueCents:
+          type: integer
+          minimum: 0
+    SpecialtyAnalyticsResponse:
+      type: object
+      additionalProperties: false
+      required: [range, currency, data]
+      properties:
+        range:
+          $ref: '#/components/schemas/AnalyticsRange'
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialtyMetric'
+    AuditLogEntry:
+      type: object
+      additionalProperties: false
+      required: [id, occurredAt, action, resourceType, resourceId, metadata, entryHash]
+      properties:
+        id:
+          type: string
+          format: uuid
+        occurredAt:
+          type: string
+          format: date-time
+        actorId:
+          type: [string, 'null']
+          format: uuid
+        actorRole:
+          oneOf:
+            - $ref: '#/components/schemas/UserRole'
+            - type: 'null'
+        action:
+          type: string
+        resourceType:
+          type: string
+        resourceId:
+          type: string
+        requestId:
+          type: [string, 'null']
+        sourceIp:
+          type: [string, 'null']
+        beforeHash:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+        afterHash:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+        metadata:
+          type: object
+          additionalProperties: true
+        previousHash:
+          type: [string, 'null']
+          pattern: '^[0-9a-f]{64}$'
+        entryHash:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+    AuditLogListResponse:
+      type: object
+      additionalProperties: false
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    AuditChainVerification:
+      type: object
+      additionalProperties: false
+      required: [valid, checkedEntries, checkedAt]
+      properties:
+        valid:
+          type: boolean
+        checkedEntries:
+          type: integer
+          minimum: 0
+        firstInvalidId:
+          type: [string, 'null']
+          format: uuid
+        checkedAt:
+          type: string
+          format: date-time
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, service, version, environment, uptimeSeconds, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+        version:
+          type: string
+        environment:
+          type: string
+        uptimeSeconds:
+          type: integer
+          minimum: 0
+        timestamp:
+          type: string
+          format: date-time

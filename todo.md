@@ -29,12 +29,12 @@ Source of truth for scope: `description.md`.
   - [x] Deterministic seed: patients, doctors, availability, historical consultations
   - [x] Verify: migrations up/down and re-seed pass against a fresh PostgreSQL database
 
-- [ ] **3. OpenAPI 3.1 contract**
-  - [ ] Endpoints: auth, doctors, availability, bookings, consultations, prescriptions, payments, admin analytics, health
-  - [ ] Shared error envelope; cursor pagination; filter conventions
-  - [ ] `Idempotency-Key` header, rate-limit headers, correlation IDs documented
-  - [ ] Generate server types + typed client
-  - [ ] Contract validation wired into CI
+- [x] **3. OpenAPI 3.1 contract**
+  - [x] Endpoints: auth, doctors, availability, bookings, consultations, prescriptions, payments, admin analytics, health
+  - [x] Shared error envelope; cursor pagination; filter conventions
+  - [x] `Idempotency-Key` header, rate-limit headers, correlation IDs documented
+  - [x] Generate server types + typed client
+  - [x] Contract lint and client typecheck wired into the local quality gate (CI job lands in task 17)
 
 - [ ] **4. Architecture package (2–4 pages)**
   - [ ] High-level components + data-flow diagrams
