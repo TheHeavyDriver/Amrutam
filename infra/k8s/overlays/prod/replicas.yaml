@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amrutam-api
+  namespace: amrutam
+spec:
+  replicas: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amrutam-worker
+  namespace: amrutam
+spec:
+  replicas: 3

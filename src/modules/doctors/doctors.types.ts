@@ -38,6 +38,11 @@ export interface DoctorListResponse {
   page: PageInfo;
 }
 
+export interface DoctorDetailListResponse {
+  data: DoctorDetail[];
+  page: PageInfo;
+}
+
 export interface AvailabilitySlot {
   id: string;
   doctorId: string;

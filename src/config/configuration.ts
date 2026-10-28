@@ -24,6 +24,12 @@ export type AppConfig = {
     url: string;
     poolMax: number;
   };
+  payments: {
+    webhookSecret: string;
+  };
+  prescriptions: {
+    documentUrlTtlSeconds: number;
+  };
   cache: {
     enabled: boolean;
   };
@@ -49,6 +55,22 @@ export type AppConfig = {
   logging: {
     level: LogLevel;
     pretty: boolean;
+  };
+  jobs: {
+    outbox: {
+      pollIntervalMs: number;
+      batchSize: number;
+      maxAttempts: number;
+      lockTimeoutSeconds: number;
+      backoffBaseMs: number;
+      backoffMaxMs: number;
+    };
+    schedulerIntervalMs: number;
+    workerMetricsPort: number;
+  };
+  tracing: {
+    enabled: boolean;
+    endpoint: string;
   };
 };
 
@@ -80,6 +102,12 @@ export function loadConfiguration(rawEnv: Record<string, unknown> = process.env)
       url: env.DATABASE_URL,
       poolMax: env.DATABASE_POOL_MAX,
     },
+    payments: {
+      webhookSecret: env.PAYMENT_WEBHOOK_SECRET,
+    },
+    prescriptions: {
+      documentUrlTtlSeconds: env.PRESCRIPTION_DOCUMENT_URL_TTL_SECONDS,
+    },
     cache: {
       enabled: env.CACHE_ENABLED,
     },
@@ -105,6 +133,22 @@ export function loadConfiguration(rawEnv: Record<string, unknown> = process.env)
     logging: {
       level: env.LOG_LEVEL,
       pretty: env.LOG_PRETTY ? env.LOG_PRETTY === 'true' : env.NODE_ENV === 'development',
+    },
+    jobs: {
+      outbox: {
+        pollIntervalMs: env.OUTBOX_POLL_INTERVAL_MS,
+        batchSize: env.OUTBOX_BATCH_SIZE,
+        maxAttempts: env.OUTBOX_MAX_ATTEMPTS,
+        lockTimeoutSeconds: env.OUTBOX_LOCK_TIMEOUT_SECONDS,
+        backoffBaseMs: env.OUTBOX_BACKOFF_BASE_MS,
+        backoffMaxMs: env.OUTBOX_BACKOFF_MAX_MS,
+      },
+      schedulerIntervalMs: env.SCHEDULER_INTERVAL_MS,
+      workerMetricsPort: env.WORKER_METRICS_PORT,
+    },
+    tracing: {
+      enabled: env.OTEL_ENABLED,
+      endpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT,
     },
   };
 }

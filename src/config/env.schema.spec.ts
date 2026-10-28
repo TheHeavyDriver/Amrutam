@@ -6,6 +6,7 @@ const SECRETS = {
   JWT_MFA_SECRET: 'test-mfa-secret-that-is-at-least-32-characters',
   AUTH_TOKEN_PEPPER: 'test-pepper-that-is-at-least-32-characters',
   AUTH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+  PAYMENT_WEBHOOK_SECRET: 'test-payment-webhook-secret-at-least-32-characters',
 };
 
 describe('validateEnv', () => {
@@ -24,6 +25,7 @@ describe('validateEnv', () => {
     expect(env.DATABASE_URL).toBe('postgresql://amrutam:amrutam@localhost:5432/amrutam');
     expect(env.REDIS_URL).toBe('redis://localhost:6379');
     expect(env.CACHE_ENABLED).toBe(true);
+    expect(env.PAYMENT_WEBHOOK_SECRET).toContain('webhook');
     expect(env.AUTH_ACCESS_TOKEN_TTL_SECONDS).toBe(900);
     expect(env.AUTH_REQUIRE_EMAIL_VERIFICATION).toBe(true);
     expect(env.RATE_LIMIT_MAX).toBe(300);

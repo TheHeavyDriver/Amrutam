@@ -9,7 +9,7 @@ The assignment treats missing idempotency as an automatic failure. Mobile client
 
 ## Decision
 
-Require an `Idempotency-Key` header on all non-idempotent endpoints. Persist a row in `idempotency_keys` containing:
+Require an `Idempotency-Key` header on retry-sensitive domain endpoints (availability, booking, consultation, prescription, payment, and admin verification). Authentication endpoints use their own replay/token protections. Persist a row in `idempotency_keys` containing:
 
 - the key, caller identity, route, and a fingerprint of the request body;
 - a unique constraint on `(caller_id, key)`;
@@ -24,6 +24,6 @@ The idempotency record and the business transaction are committed together where
 ## Consequences
 
 - Retries are safe across process restarts and multiple API replicas.
-- Every write pays one extra indexed write; acceptable at the target throughput.
+- Every retry-sensitive domain write pays one extra indexed write; acceptable at the target throughput.
 - Keys and stored responses contain no PHI beyond what the original response returned.
 - Retention must be enforced by a scheduled job and documented for clients.

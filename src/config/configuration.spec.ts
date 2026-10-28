@@ -6,6 +6,7 @@ const SECRETS = {
   JWT_MFA_SECRET: 'test-mfa-secret-that-is-at-least-32-characters',
   AUTH_TOKEN_PEPPER: 'test-pepper-that-is-at-least-32-characters',
   AUTH_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+  PAYMENT_WEBHOOK_SECRET: 'test-payment-webhook-secret-at-least-32-characters',
 };
 
 describe('loadConfiguration', () => {
@@ -41,6 +42,8 @@ describe('loadConfiguration', () => {
     expect(config.service.name).toBe('amrutam-api');
     expect(config.database.url).toContain('postgresql://');
     expect(config.cache.enabled).toBe(true);
+    expect(config.payments.webhookSecret).toContain('webhook');
+    expect(config.prescriptions.documentUrlTtlSeconds).toBe(300);
     expect(config.auth.accessTokenTtlSeconds).toBe(900);
     expect(config.auth.secrets.encryptionKey).toBe(SECRETS.AUTH_ENCRYPTION_KEY);
     expect(config.http.rateLimit.max).toBe(300);

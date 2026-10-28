@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amrutam-config
+  namespace: amrutam
+data:
+  CORS_ORIGINS: https://staging.example.com
+  APP_PUBLIC_URL: https://api.staging.example.com

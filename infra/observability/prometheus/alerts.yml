@@ -1,0 +1,87 @@
+groups:
+  - name: amrutam-api
+    interval: 30s
+    rules:
+      - alert: AmrutamApiDown
+        expr: up{job="amrutam-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: Amrutam API scrape target is down
+          runbook: docs/runbooks.md#api-down
+
+      - alert: AmrutamWorkerDown
+        expr: up{job="amrutam-worker"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: Outbox worker scrape target is down
+          description: Async refunds, reminders, and no-show detection are not progressing.
+          runbook: docs/runbooks.md#worker-down
+
+      - alert: AmrutamHighHttpErrorRate
+        expr: |
+          (
+            sum(rate(amrutam_http_requests_total{status_code=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(amrutam_http_requests_total[5m])), 0.001)
+          ) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: API 5xx ratio exceeds 1%
+          runbook: docs/runbooks.md#high-error-rate
+
+      - alert: AmrutamHighReadLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(amrutam_http_request_duration_seconds_bucket{method="GET"}[5m]))
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: GET p95 latency exceeds 200 ms
+          runbook: docs/runbooks.md#high-latency
+
+      - alert: AmrutamHighWriteLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(amrutam_http_request_duration_seconds_bucket{method=~"POST|PATCH|PUT|DELETE"}[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: Write p95 latency exceeds 500 ms
+          runbook: docs/runbooks.md#high-latency
+
+      - alert: AmrutamOutboxBacklog
+        expr: amrutam_outbox_backlog{status="pending"} > 100
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: Transactional outbox backlog is above 100 events
+          runbook: docs/runbooks.md#outbox-backlog
+
+      - alert: AmrutamDeadLetterEvents
+        expr: amrutam_outbox_backlog{status="dead_letter"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: Outbox dead-letter queue is not empty
+          runbook: docs/runbooks.md#dlq

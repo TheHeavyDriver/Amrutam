@@ -49,6 +49,9 @@ const EXPECTED_OPERATIONS: Array<[string, string]> = [
   ['get', '/api/v1/doctors'],
   ['get', '/api/v1/doctors/{doctorId}'],
   ['get', '/api/v1/doctors/{doctorId}/availability'],
+  ['get', '/api/v1/doctors/me/availability'],
+  ['post', '/api/v1/doctors/me/availability'],
+  ['delete', '/api/v1/doctors/me/availability/{slotId}'],
   ['post', '/api/v1/bookings'],
   ['get', '/api/v1/bookings'],
   ['get', '/api/v1/bookings/{consultationId}'],
@@ -71,6 +74,7 @@ const EXPECTED_OPERATIONS: Array<[string, string]> = [
   ['post', '/api/v1/prescriptions/{prescriptionId}/sign'],
   ['post', '/api/v1/prescriptions/{prescriptionId}/void'],
   ['get', '/api/v1/prescriptions/{prescriptionId}/document'],
+  ['get', '/api/v1/prescriptions/{prescriptionId}/document/content'],
   ['get', '/api/v1/admin/doctors'],
   ['patch', '/api/v1/admin/doctors/{doctorId}/verification'],
   ['get', '/api/v1/admin/analytics/overview'],
@@ -97,9 +101,12 @@ const PUBLIC_OPERATIONS = new Set([
   'get /api/v1/doctors',
   'get /api/v1/doctors/{doctorId}',
   'get /api/v1/doctors/{doctorId}/availability',
+  'get /api/v1/prescriptions/{prescriptionId}/document/content',
 ]);
 
 const IDEMPOTENT_OPERATIONS: Array<[string, string]> = [
+  ['post', '/api/v1/doctors/me/availability'],
+  ['delete', '/api/v1/doctors/me/availability/{slotId}'],
   ['post', '/api/v1/bookings'],
   ['post', '/api/v1/bookings/{consultationId}/cancel'],
   ['post', '/api/v1/bookings/{consultationId}/reschedule'],
@@ -168,7 +175,7 @@ describe('OpenAPI contract', () => {
     }
   });
 
-  it('requires an idempotency key on unsafe clinical and payment writes', () => {
+  it('requires an idempotency key on unsafe availability, clinical, and payment writes', () => {
     for (const [method, route] of IDEMPOTENT_OPERATIONS) {
       const parameters = operationId(method, route).parameters ?? [];
       const hasIdempotencyKey = parameters.some(

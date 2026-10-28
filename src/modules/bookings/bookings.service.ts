@@ -330,6 +330,30 @@ export class BookingsService {
         );
 
         await this.releaseSlot(client, current.slot_id, current.id);
+
+        // Compensating payment work is asynchronous so a provider outage never
+        // prevents the cancellation itself from committing. The unique event
+        // per payment keeps retries and reconciliation idempotent.
+        await client.query(
+          `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+           SELECT 'payment', p.id, 'payment.refund_requested',
+                  jsonb_build_object(
+                    'paymentId', p.id,
+                    'consultationId', $1::uuid,
+                    'reason', 'consultation_cancelled'
+                  )
+             FROM payments p
+            WHERE p.consultation_id = $1::uuid
+              AND p.status IN ('captured', 'partially_refunded')
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM outbox_events o
+                 WHERE o.aggregate_id = p.id
+                   AND o.event_type = 'payment.refund_requested'
+              )`,
+          [consultationId],
+        );
+
         const body = await this.loadConsultation(client, consultationId);
 
         await this.enqueue(client, consultationId, 'consultation.cancelled', {

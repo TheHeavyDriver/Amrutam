@@ -11,7 +11,7 @@ export async function createTestApp(): Promise<NestFastifyApplication> {
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(
     createFastifyAdapter(loadConfiguration()),
-    { bufferLogs: true },
+    { bufferLogs: true, rawBody: true },
   );
 
   app.useLogger(app.get(Logger));

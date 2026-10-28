@@ -1,203 +1,73 @@
-# Amrutam Telemedicine Backend — TODO
+# Amrutam Telemedicine Backend — status
 
-Working checklist derived from `plans/2026-10-27-amrutam-telemedicine-backend-v1.md`.
-Source of truth for scope: `description.md`.
+Source of truth for scope: [`description.md`](description.md). Architecture decisions and the original delivery plan remain in [`plans/`](plans/) and [`docs/decisions/`](docs/decisions/).
 
-**Legend:** `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
+**Legend:** `[x]` implemented and locally verified · `[~]` implemented but needs an external environment/drill · `[ ]` not done / production follow-up
 
-**Non-negotiables (assignment auto-fail if missing):** idempotent writes, authz on every route, audit trails for state changes, encryption + secret hygiene, reproducible test/CI path.
+## Non-negotiables
 
----
+- [x] **Idempotent writes** — transactional `idempotency_keys`, actor/key advisory lock, request fingerprint, stored response replay, `Idempotency-Replayed: true`, and `422 IDEMPOTENCY_KEY_REUSED`; booking and payment e2e tests cover duplicate/concurrent requests.
+- [x] **Authorization on every route** — deny-by-default global JWT guard + roles guard, explicit `@Public()` allowlist, service-level ownership/state checks, and cross-role e2e tests.
+- [x] **Audit trails for state changes** — append-only hash-chained `audit_logs`, serialised with an advisory transaction lock; audit, clinical state, and outbox commit in one transaction. Admin search/verification endpoints included.
+- [x] **Encryption and secret hygiene** — Argon2id, AES-256-GCM for TOTP secrets/tokens, HMAC refresh tokens and capability URLs, required startup secrets, redacted logs, KMS/Secrets Manager Terraform, ExternalSecret example, no committed `.env`.
+- [x] **Reproducible tests/CI path** — deterministic test reset/seed, 18 suites / 111 tests, `npm test`, GitHub Actions quality/integration/supply-chain/CodeQL jobs, Docker build, SBOM, and gated staging CD workflow.
 
-## Phase 0 — Foundations (Day 1)
+## Assignment deliverables
 
-- [x] **1. Scaffold the modular monolith**
-  - [x] NestJS + Fastify shell, strict TypeScript, ESLint, Prettier
-  - [x] Consistent folder-per-module layout (domain modules land as each phase progresses)
-  - [x] Docker Compose: PostgreSQL 16, Redis 7, OTel collector, Prometheus, Grafana, Loki, Tempo
-  - [x] Makefile for common commands
-  - [x] Typed env validation, structured logging with request IDs, graceful shutdown
-  - [x] Conventional commits + `docs/decisions/` ADR log
-  - [x] Verify: one command brings the stack up; no secrets committed
+- [x] **1. Git repo with code and infra** — API, worker, SQL migrations, tests, Terraform, Kubernetes, observability, docs.
+- [x] **2. README with setup** — [`README.md`](README.md): quick start, configuration, API examples, demo, tests, observability, deployment, limitations.
+- [x] **3. OpenAPI/GraphQL schema** — [`openapi/openapi.yaml`](openapi/openapi.yaml), 56 operations, Redocly-validated, generated typed client, contract e2e test.
+- [x] **4. Architecture doc (2–4 pages)** — [`docs/architecture.md`](docs/architecture.md): components, request path, ERD, booking sequence, saga, retries, partitioning, caching, failure modes, observability, trade-offs.
+- [x] **5. Tests and CI pipeline** — [`test/`](test), [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`.github/workflows/codeql.yml`](.github/workflows/codeql.yml), [`.github/workflows/cd-staging.yml`](.github/workflows/cd-staging.yml).
+- [x] **6. Observability setup** — Prometheus metrics, Grafana dashboard, alert rules, OTel traces, Loki logs, health/readiness, runbooks.
+- [x] **7. Security checklist and threat model** — [`docs/security.md`](docs/security.md): OWASP mapping, STRIDE, attack surface, data classification, authz matrix, encryption/key rotation, retention, release checklist, residual risks.
 
-- [x] **2. Clinical data model in PostgreSQL**
-  - [x] Tables: `users`, `profiles`, `doctors`, `availability_slots`, `consultations`, `prescriptions`, `payments`, `audit_logs`, `idempotency_keys`, `outbox_events`
-  - [x] DB invariants: unique slot occupancy, valid state transitions, non-negative amounts, FK integrity
-  - [x] 16 hash partitions for `consultations`; monthly range partitions for `audit_logs` (see ADR 0004)
-  - [x] Partial/covering indexes for expected access paths; UUIDv7 identifiers
-  - [x] Reversible migrations; audit partition helper pre-creates four months (scheduling lands with async jobs in task 11)
-  - [x] Deterministic seed: patients, doctors, availability, historical consultations
-  - [x] Verify: migrations up/down and re-seed pass against a fresh PostgreSQL database
+## Core workflows
 
-- [x] **3. OpenAPI 3.1 contract**
-  - [x] Endpoints: auth, doctors, availability, bookings, consultations, prescriptions, payments, admin analytics, health
-  - [x] Shared error envelope; cursor pagination; filter conventions
-  - [x] `Idempotency-Key` header, rate-limit headers, correlation IDs documented
-  - [x] Generate server types + typed client
-  - [x] Contract lint and client typecheck wired into the local quality gate (CI job lands in task 17)
+- [x] **User lifecycle** — registration, login, email verification token flow, password reset, profile, password change, roles, sessions, refresh rotation/reuse detection, lockout, TOTP MFA, recovery codes, admin session revocation.
+- [x] **Doctor availability and booking** — public doctor search/detail/availability, doctor-managed one-off availability slots, slot generation/seed, row-locked booking, patient-overlap lock, unique slot claim, GiST exclusion constraint, idempotent create/reschedule/cancel, join token, start/complete/no-show.
+- [x] **Consultation lifecycle and prescriptions** — scheduled → in-progress → completed/cancelled/no-show, doctor assignment checks, draft/update/sign/void prescriptions, immutable signed HTML + SHA-256, short-lived HMAC capability URL.
+- [x] **Search and filtering** — specialty, language, fee range, rating, location, next availability; deterministic sorting and cursor pagination; cache keys include all filters.
+- [x] **Compliance and audit** — hash-chained audit for auth/admin/clinical/payment state changes; PHI-free metadata; admin search/verify; monthly partitions; idempotency and audit retention cleanup.
+- [x] **Payments and refunds** — server-derived fees, one active payment per consultation, idempotent intent/confirm, HMAC webhook verification and event dedupe, partial/full refunds, append-only refund ledger, async cancellation compensation/reconciliation.
+- [x] **Admin analytics** — consultations/day, revenue, refunds/net, doctor utilization, cancellation/no-show rates, top specialties, UTC buckets, 366-day cap, admin-only.
+- [x] **Async work** — PostgreSQL transactional outbox, `FOR UPDATE SKIP LOCKED`, bounded retries, exponential backoff + jitter, stale-lock recovery, dead-letter status, CLI replay, scheduled reminders/no-show/refund/partition/cleanup jobs with advisory locks.
 
-- [ ] **4. Architecture package (2–4 pages)**
-  - [ ] High-level components + data-flow diagrams
-  - [ ] Booking flow sequence diagram
-  - [ ] ERD generated from schema
-  - [ ] Retry/backoff policy, partition strategy, cache keys + invalidation
-  - [ ] Concurrency/locking approach, transaction boundaries, saga compensation
-  - [ ] RPO/RTO, backup schedule, restore procedure, multi-AZ assumptions, failure modes
-  - [ ] Verify: diagrams match the implemented system; trade-offs recorded
+## Verification evidence (local)
 
----
+| Check                                         | Result                                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `npm run format:check`                        | Pass                                                                                                                                 |
+| `npm run typecheck`                           | Pass                                                                                                                                 |
+| `npm run lint`                                | Pass                                                                                                                                 |
+| `npm run build`                               | Pass                                                                                                                                 |
+| `npm run api:check`                           | OpenAPI valid + generated client typechecks                                                                                          |
+| `TEST_DATABASE_URL=… npm test`                | 18 suites / 111 tests pass                                                                                                           |
+| `docker compose config`                       | Pass                                                                                                                                 |
+| `docker build -t amrutam-api:local .`         | Pass; runtime runs as UID 1000 with npm/npx/yarn removed                                                                             |
+| Trivy image scan (HIGH/CRITICAL, fixed only)  | Pass; 0 findings after removing the npm/yarn bundled dependency trees                                                                |
+| Gitleaks secret scan                          | Pass; no leaks with test fixtures allowlisted                                                                                        |
+| `npm audit --omit=dev --audit-level=high`     | 0 vulnerabilities                                                                                                                    |
+| Worker smoke test (`node dist/worker.js`)     | `/health/live` 200, `/metrics` exposes outbox/process metrics, graceful SIGTERM                                                      |
+| `scripts/demo.sh`                             | Login → search → availability → booking → payment capture → cancellation passed; worker produced refund ledger                       |
+| Restore drill                                 | Local PostgreSQL 16 dump/restore + integrity SQL passed (0 active consultations without claim, 0 over-refunds, 0 broken audit links) |
+| `terraform fmt -check` / `terraform validate` | Pass (provider init without backend)                                                                                                 |
+| `kustomize build` staging/prod                | Pass (16 rendered objects)                                                                                                           |
+| `scripts/verify-restore.sql`                  | Pass against test database                                                                                                           |
+| k6 load test                                  | Not executed against a provisioned environment; thresholds/results remain unmeasured                                                 |
+| Terraform plan/apply                          | Not executed (no AWS credentials/account in this environment)                                                                        |
+| Kubernetes apply / staging CD                 | Not executed against a live cluster; manifests render and workflow is gated by environment secrets                                   |
+| GitHub Actions                                | Workflow authored but not executed on GitHub from this environment                                                                   |
 
-## Phase 1 — Identity and Audit (Days 2–3)
+## Production follow-ups (not assignment blockers)
 
-- [~] **5. Identity, MFA, RBAC, sessions**
-  - [x] Registration, login, email verification (token encrypted into the outbox; provider worker still pending)
-  - [x] Argon2id hashing; short-lived access tokens; rotating refresh tokens with reuse detection
-  - [x] TOTP MFA for doctors/admins; hashed recovery codes; step-up auth still pending
-  - [x] Role/permission guards, ownership checks, account lockout, session revocation
-  - [~] Global per-IP rate limit; endpoint-specific limits and distributed store still pending
-  - [~] Verify: auth/session/MFA/audit e2e suite passes; full role/resource matrix expands with clinical routes
-
-- [~] **6. Tamper-evident audit + PHI-safe logging**
-  - [x] Capture actor, action, resource, timestamp, request ID, source IP, before/after hashes
-  - [x] Hash-chain audit entries; admin-only search and chain verification
-  - [x] Pino redaction for credentials/tokens; audit metadata remains PHI-free
-  - [~] Verify: chain/append-only tests pass; add log-redaction assertions and document retention
-
----
-
-## Phase 2 — Clinical Core (Days 4–6)
-
-- [~] **7. Doctor profiles + availability**
-  - [ ] Weekly recurring schedules, timezone-aware, buffers, leave blocks, one-off overrides
-  - [x] Deterministic slot generation + DB-level exclusivity (seed + GiST exclusion constraint)
-  - [~] Doctor profiles, credential metadata, verification status, public read endpoints; admin onboarding writes pending
-  - [ ] Verify: daylight-saving transition tests pass; UTC storage with explicit timezone metadata
-
-- [x] **8. Doctor search + caching**
-  - [x] Filters: specialty, language, fee range, rating, location, next available slot
-  - [x] Deterministic sorting; cursor pagination with enforced limits
-  - [x] Redis cache-aside with explicit TTLs + invalidation on booking/availability change
-  - [x] Verify: cache keys include every filter; invalidation wired; tests run with caching disabled
-
-- [~] **9. Idempotent booking + payment saga** ⚠️ auto-fail if missing
-  - [x] `Idempotency-Key` required; persist request fingerprints + responses; replay returns original result
-  - [x] Reserve slot + create consultation in one transaction
-  - [ ] Payment authorization/confirmation via orchestrated saga with compensation
-  - [~] Cancellation and rescheduling; refunds/expired holds pending payment saga
-  - [x] Verify: duplicate/concurrent replay tests; parallel attempts on one slot → exactly one success
-
-- [~] **10. Consultation lifecycle + prescriptions**
-  - [x] State machine: scheduled → in-progress → completed / cancelled / no-show, authz at each step
-  - [~] Short-lived hashed join tokens, notes, diagnosis; prescription line items pending
-  - [ ] Async signed prescription documents with versioning + immutable audit trail
-  - [ ] Verify: prescriptions immutable after signing; generation failures retryable and visible
-
-- [ ] **11. Outbox-backed async jobs**
-  - [ ] Transactional outbox → BullMQ workers
-  - [ ] Bounded retries, exponential backoff + jitter, idempotent consumers
-  - [ ] DLQ with replay tooling
-  - [ ] Scheduled jobs: reminders, no-show detection, slot cleanup, payment reconciliation, analytics rollups
-  - [ ] Verify: poison messages don't block queue; DLQ depth exposed as metric; workers scale horizontally
-
-- [ ] **12. Admin analytics**
-  - [ ] Consultations/day, revenue, doctor utilization, cancellation/no-show rates, top specialties
-  - [ ] Date-range filters; materialized views or scheduled rollups
-  - [ ] Documented freshness target; short cache; admin-only access
-  - [ ] Verify: analytics queries don't degrade booking latency
-
----
-
-## Phase 3 — Scale, Observability, Reliability (Days 7–8)
-
-- [ ] **13. Performance hardening + load tests**
-  - [ ] EXPLAIN slow queries; add missing indexes; read replica; connection pooling
-  - [ ] Response compression, request timeouts, payload limits, query budgets
-  - [ ] k6 scenario tests at target + burst throughput on seeded data
-  - [ ] Verify: p95 reads <200 ms, p95 writes <500 ms, error rate <1%; report p95/p99 + saturation
-
-- [ ] **14. Observability end to end**
-  - [ ] OTel auto-instrumentation: HTTP, PostgreSQL, Redis, queue workers; trace propagation across async boundaries
-  - [ ] RED metrics + business metrics (booking success, payment failures, DLQ depth)
-  - [ ] Grafana dashboards for booking journey; alerts for error rate, latency, queue backlog, failed bookings
-  - [ ] Health + readiness endpoints with dependency checks
-  - [ ] Verify: one trace spans HTTP → Postgres → Redis → worker; log redaction tested
-
-- [ ] **15. Backup, DR, graceful degradation**
-  - [ ] Automated snapshots + PITR; retention policy documented
-  - [ ] Automated restore drill: clean DB, verify row counts + checksums
-  - [ ] Circuit breakers, retry budgets, dependency timeouts, graceful shutdown
-  - [ ] Verify: measured restore time within documented RTO/RPO
-
----
-
-## Phase 4 — Delivery (Days 9–10)
-
-- [ ] **16. Test pyramid**
-  - [ ] Unit tests for domain rules
-  - [ ] Integration tests with Testcontainers (PostgreSQL, Redis)
-  - [ ] E2E tests for booking + consultation journeys
-  - [ ] Adversarial: duplicate idempotency keys, concurrent booking, cross-role access, expired tokens, invalid state transitions
-  - [ ] Failure-path tests: payments, queue retries
-  - [ ] Verify: deterministic in CI; ≥80% line coverage on core modules
-
-- [ ] **17. CI/CD + IaC + container hardening**
-  - [ ] Multi-stage, non-root, minimal image; health checks; pinned dependencies
-  - [ ] GitHub Actions: lint, typecheck, tests, migration checks, SAST, dependency + container scans, SBOM, secret scanning
-  - [ ] Terraform: managed PostgreSQL, Redis, networking, secrets
-  - [ ] Kubernetes manifests/Helm; staging deploy, smoke tests, migration gating, tested rollback
-  - [ ] Verify: clean-clone pipeline green; no secrets in images; required repo secrets documented
-
-- [ ] **18. Documentation, security package, demo, self-review**
-  - [ ] README: setup, env vars, migrations, seeding, tests, architecture links, API examples
-  - [ ] OWASP Top 10 mapping, STRIDE threat model, attack-surface analysis
-  - [ ] Data classification, encryption + key-rotation policy, audit-log retention policy
-  - [ ] Dependency-scanning evidence
-  - [ ] Runbooks: deploy, rollback, restore, DLQ replay, incident triage
-  - [ ] Demo script: registration → booking → consultation → prescription → payment → analytics
-  - [ ] Clean-clone rehearsal (<10 min to working demo)
-  - [ ] Rubric self-review ≥90/100
-
----
-
-## Definition of Done (deliverable checklist)
-
-- [ ] Git repo with code and infra
-- [ ] README with setup
-- [ ] OpenAPI/GraphQL schema
-- [ ] Architecture doc (2–4 pages)
-- [ ] Tests and CI pipeline
-- [ ] Observability setup
-- [ ] Security checklist and threat model
-
-## Verification Gates (from the plan)
-
-- [ ] All 7 deliverables present and linked from README
-- [ ] OpenAPI validates, covers every route, contract tests green
-- [ ] Clean clone → full stack + migrations + seeds in <10 min
-- [ ] N requests with same `Idempotency-Key` → exactly one booking + one payment intent
-- [ ] 200 parallel attempts on one slot → one success, zero double bookings
-- [ ] Authz matrix: no cross-role resource access
-- [ ] MFA enforced for doctors/admins; revocation + refresh reuse detection tested
-- [ ] Every state change audited; hash-chain verification passes
-- [ ] Log redaction tests pass (no tokens/passwords/clinical text)
-- [ ] k6: p95 read <200 ms, p95 write <500 ms, error rate <1%
-- [ ] Single trace spans HTTP → Postgres → Redis → worker
-- [ ] Dashboards + alerts for latency, errors, booking failures, queue/DLQ depth
-- [ ] Restore drill within RTO/RPO with integrity verified
-- [ ] CI green from clean clone with all scans + SBOM
-- [ ] Image runs non-root, no embedded secrets
-- [ ] Core modules ≥80% coverage, critical failure paths covered
-- [ ] Security package complete (OWASP, STRIDE, classification, encryption/key rotation, retention)
-- [ ] Demo runs journey end to end without manual DB intervention
-- [ ] Self-review scores ≥90/100 before bonus
-
-## Risks to Watch
-
-- [ ] Scope creep beyond rubric → cut bonus first, protect idempotency/security/core flows/tests
-- [ ] Double bookings → DB exclusivity + single-transaction reservation + concurrency test in CI
-- [ ] Incomplete idempotency → one reusable interceptor + unique DB constraint
-- [ ] Infra eating clinical time → time-box to 1 day; Compose + CI is the working deployment
-- [ ] PHI leakage / missing authz → deny-by-default, response serializers, redaction, final route-by-route role review
-- [ ] Observability added late → instrument per module from scaffold
-- [ ] Partition/migration complexity → partition only `consultations` + `audit_logs`; test up/down
-- [ ] Analytics degrading booking latency → rollups/MVs, replica, short TTLs, statement timeouts
+- [ ] Endpoint-specific distributed rate limits and step-up authentication for high-risk admin actions.
+- [ ] Real email/SMS/push provider behind the notification adapter; delivery evidence and bounce handling.
+- [ ] Real payment provider adapter (idempotent authorise/capture/refund, webhook secret rotation, reconciliation dashboard).
+- [ ] External WORM anchoring of audit-chain heads; field-level encryption for free-text clinical notes if policy requires it.
+- [ ] Recurring weekly availability templates, timezone-aware schedule editing, buffers, and leave blocks; current doctor-managed slots are one-off.
+- [ ] Read replicas/PgBouncer routing and materialised analytics rollups when volume exceeds indexed-query capacity.
+- [ ] Producer-to-worker trace-context propagation across the outbox boundary (worker spans currently correlate by event ID).
+- [ ] Execute k6 at target/burst load, record p95/p99/saturation, and size RDS/ElastiCache from the result.
+- [ ] Run a restore drill against a real RDS snapshot/PITR copy and record measured RTO/RPO.
+- [ ] Independent penetration test and clinical/compliance review before handling real PHI.

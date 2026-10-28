@@ -55,7 +55,7 @@ tags:
   - name: Users
     description: The authenticated caller's profile and credentials.
   - name: Doctors
-    description: Public doctor discovery and availability.
+    description: Public doctor discovery plus authenticated doctor availability management.
   - name: Bookings
     description: Slot reservation and consultation lifecycle.
   - name: Payments
@@ -592,6 +592,104 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/doctors/me/availability:
+    get:
+      tags: [Doctors]
+      operationId: listOwnAvailability
+      summary: List the authenticated doctor's availability
+      description: Doctor-only. Includes available, held, booked, and blocked slots. Use the public route for bookable slots only.
+      parameters:
+        - $ref: '#/components/parameters/AvailabilityFrom'
+        - $ref: '#/components/parameters/AvailabilityTo'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Availability page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Doctors]
+      operationId: createOwnAvailability
+      summary: Publish a one-off availability slot
+      description: Doctor-only. Slots must be between 5 minutes and 4 hours, start in the future, and not overlap existing availability.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAvailabilitySlotRequest'
+      responses:
+        '201':
+          description: Availability slot created.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilitySlot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+  /api/v1/doctors/me/availability/{slotId}:
+    delete:
+      tags: [Doctors]
+      operationId: deleteOwnAvailability
+      summary: Remove an unbooked availability slot
+      description: Doctor-only. Only slots in the available state can be removed; booked or held slots must be handled through the consultation lifecycle.
+      parameters:
+        - $ref: '#/components/parameters/AvailabilitySlotId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Availability slot removed.
+          headers:
+            Idempotency-Replayed:
+              $ref: '#/components/headers/IdempotencyReplayed'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalServerError'
   /api/v1/bookings:
@@ -1274,6 +1372,42 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/prescriptions/{prescriptionId}/document/content:
+    get:
+      tags: [Prescriptions]
+      operationId: downloadPrescriptionDocument
+      summary: Download a signed prescription document via a capability URL
+      description: |
+        Public capability URL returned by the document metadata endpoint. The
+        short-lived HMAC signature and expiry are validated before any document
+        bytes are served. No bearer token is required because the URL itself is
+        the short-lived credential.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/PrescriptionId'
+        - $ref: '#/components/parameters/PrescriptionDocumentExpires'
+        - $ref: '#/components/parameters/PrescriptionDocumentSignature'
+      responses:
+        '200':
+          description: Immutable signed prescription artifact.
+          headers:
+            Cache-Control:
+              description: Documents are never cached by intermediaries.
+              schema:
+                type: string
+          content:
+            text/html:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/admin/doctors:
     get:
       tags: [Admin]
@@ -1676,6 +1810,13 @@ components:
       schema:
         type: string
         format: uuid
+    AvailabilitySlotId:
+      name: slotId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     DoctorIdFilter:
       name: doctorId
       in: query
@@ -1716,6 +1857,23 @@ components:
       schema:
         type: string
         format: uuid
+    PrescriptionDocumentExpires:
+      name: expires
+      in: query
+      required: true
+      description: Unix epoch second at which the capability URL expires.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+    PrescriptionDocumentSignature:
+      name: signature
+      in: query
+      required: true
+      description: Hex-encoded HMAC-SHA256 binding the prescription id and expiry.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
     PaymentProviderPath:
       name: provider
       in: path
@@ -2433,6 +2591,19 @@ components:
     SlotStatus:
       type: string
       enum: [available, held, booked, blocked]
+    CreateAvailabilitySlotRequest:
+      type: object
+      additionalProperties: false
+      required: [startsAt, endsAt]
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          description: Future UTC start time.
+        endsAt:
+          type: string
+          format: date-time
+          description: End time; the slot must be between 5 minutes and 4 hours long.
     AvailabilitySlot:
       type: object
       additionalProperties: false

@@ -1,25 +1,63 @@
 # Amrutam Telemedicine Backend
 
-Production-grade backend for Amrutam's telemedicine platform, built to satisfy the assignment in [`description.md`](description.md): a secure, observable, and scalable service covering identity, doctor availability, booking, consultations, prescriptions, payments, audit trails, and admin analytics.
+Production-grade telemedicine backend for the assignment in [`description.md`](description.md). It implements identity and MFA, doctor discovery and availability, idempotent booking, consultation lifecycle, signed prescriptions, payments/refunds, tamper-evident audit, admin verification and analytics, a transactional outbox worker, observability, IaC, tests, and security documentation.
 
-The work is tracked in [`todo.md`](todo.md); the detailed implementation roadmap lives in [`plans/2026-10-27-amrutam-telemedicine-backend-v1.md`](plans/2026-10-27-amrutam-telemedicine-backend-v1.md).
-
-> **Current status:** Foundations, the PostgreSQL clinical model, the OpenAPI 3.1 contract, identity/audit, doctor discovery, and the booking/consultation lifecycle are implemented. The API supports registration, login, rotating refresh sessions, TOTP MFA, role/ownership checks, profiles, hash-chained audit records, cached doctor search and availability, idempotent booking, cancellation, rescheduling, join tokens, and scheduled → in-progress → completed/no-show transitions. Prescriptions, payments, analytics, and the remaining delivery/security artefacts are next.
+**Status:** all seven deliverables are present: runnable code, IaC, OpenAPI contract, architecture document, reproducible tests/CI, observability, and the security package. See the [deliverables map](#deliverables) and [known limitations](#known-limitations).
 
 ## Stack
 
-| Concern     | Choice                                                                          |
-| ----------- | ------------------------------------------------------------------------------- |
-| Runtime     | Node.js 22+ (ESM), TypeScript 6                                                 |
-| Framework   | NestJS 12 with the Fastify adapter                                              |
-| Validation  | Zod                                                                             |
-| API         | OpenAPI 3.1 contract + generated TypeScript client                              |
-| Logging     | pino via `nestjs-pino`, JSON in production, pretty locally                      |
-| Database    | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                              |
-| Cache       | Redis 7 cache-aside for public doctor discovery; fail-open, PHI is never cached |
-| Tests       | Vitest + SWC (decorator metadata)                                               |
-| Local infra | Docker Compose + OpenTelemetry collector, Prometheus, Grafana, Loki, Tempo      |
-| CI          | GitHub Actions (added in task 17)                                               |
+| Concern       | Choice                                                                        |
+| ------------- | ----------------------------------------------------------------------------- |
+| Runtime       | Node.js 22+ (ESM), TypeScript                                                 |
+| HTTP          | NestJS 12 + Fastify 5                                                         |
+| Validation    | Zod, strict schemas                                                           |
+| Data          | PostgreSQL 16, SQL-first migrations, `pg` (no ORM)                            |
+| Cache         | Redis 7, fail-open cache-aside for public doctor data                         |
+| Async         | PostgreSQL transactional outbox + separate worker process                     |
+| API contract  | OpenAPI 3.1, Redocly lint, generated TypeScript client                        |
+| Auth          | Argon2id, short JWT access tokens, rotating refresh tokens, TOTP MFA          |
+| Observability | pino logs, Prometheus metrics, optional OpenTelemetry → Tempo/Loki/Grafana    |
+| Tests         | Vitest + SWC; 18 suites / 111 passing tests (unit + e2e)                      |
+| Deployment    | Docker, Docker Compose, Terraform (AWS), Kubernetes/Kustomize, GitHub Actions |
+
+## Deliverables
+
+| Deliverable                             | Location                                                                                                        |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Code                                    | `src/`, `db/`, `test/`, `clients/`                                                                              |
+| Setup                                   | this README, `Makefile`, `.env.example`                                                                         |
+| OpenAPI schema                          | [`openapi/openapi.yaml`](openapi/openapi.yaml), 56 operations                                                   |
+| Architecture (2–4 pages, diagrams, ERD) | [`docs/architecture.md`](docs/architecture.md)                                                                  |
+| Tests + CI                              | [`test/`](test), [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [CodeQL](.github/workflows/codeql.yml) |
+| Observability                           | [`infra/observability/`](infra/observability), dashboards, alerts, runbooks                                     |
+| Security checklist + STRIDE             | [`docs/security.md`](docs/security.md)                                                                          |
+| IaC                                     | [`infra/terraform/`](infra/terraform), [`infra/k8s/`](infra/k8s)                                                |
+| Backup/DR                               | [`docs/backup-dr.md`](docs/backup-dr.md), `scripts/restore-drill.sh`                                            |
+| Runbooks                                | [`docs/runbooks.md`](docs/runbooks.md)                                                                          |
+| Load tests                              | [`load/k6/`](load/k6)                                                                                           |
+| Demo                                    | [`scripts/demo.sh`](scripts/demo.sh)                                                                            |
+
+## Architecture at a glance
+
+```text
+clients ──HTTPS/JWT──> ingress ──> API replicas (NestJS/Fastify)
+                                    │        │
+                                    │        └── Redis (public doctor cache)
+                                    └──────────> PostgreSQL 16 (primary + replicas)
+                                                     ▲
+worker replicas ──outbox / scheduled jobs────────────┘
+      │
+      └── OTLP → collector → Tempo / Loki / Prometheus → Grafana
+```
+
+- Deny-by-default JWT + RBAC guards; service-level ownership and state checks.
+- No dual writes: clinical state, audit, and outbox events commit in one PostgreSQL transaction.
+- Idempotent retry-sensitive domain writes (availability, booking, consultation, prescription, payment, admin verification) with transactional replay and request fingerprints.
+- Booking protected by row locks, patient-overlap locks, a unique slot claim, and a GiST exclusion constraint.
+- Cancellation creates an asynchronous refund saga; the worker retries with exponential backoff + jitter and parks poison events in a DLQ.
+- `consultations` is hash-partitioned; `audit_logs` is range-partitioned and hash-chained.
+
+Full design: [`docs/architecture.md`](docs/architecture.md).
 
 ## Quick start
 
@@ -27,229 +65,297 @@ Prerequisites: Node.js 22+, npm, Docker with Compose v2.
 
 ```bash
 cp .env.example .env
-npm run env:secrets # local-only random auth secrets; no values are printed
+npm run env:secrets      # fills local random secrets without printing them
 npm install
-make up          # Postgres, Redis, and the observability stack
-make db-migrate  # apply the schema
-make db-seed     # deterministic demo data and demo credentials
-npm run start:dev
+make up                  # Postgres, Redis, OTel collector, Tempo, Loki, Prometheus, Grafana
+make db-migrate
+make db-seed
+npm run start:dev        # API on http://localhost:3000
+npm run jobs:run         # in another terminal: outbox + scheduled jobs
 ```
 
 Verify:
 
 ```bash
-curl -s http://localhost:3000/health | jq
+curl -fsS http://localhost:3000/health/ready
+curl -fsS 'http://localhost:3000/api/v1/doctors?limit=2' | jq
 ```
 
-Or run the API in a container with its dependencies:
+Or run the complete containerized demo (builds, migrates, seeds, then starts API + worker + observability):
 
 ```bash
 make app
 ```
 
-The API listens on `http://localhost:3000`. Grafana runs at `http://localhost:3001` (default `admin` / `admin`), Prometheus at `http://localhost:9090`, and Tempo at `http://localhost:3200`.
+The Compose API/worker read `.env` (for auth/payment secrets) and override database/Redis URLs to the Compose network. Ports are defined in `.env`; defaults are 5432 for PostgreSQL, 6379 for Redis, 3000 for the API, 3001 for Grafana.
 
-## Endpoints
+### Demo credentials
 
-| Method  | Path                                | Description                          |
-| ------- | ----------------------------------- | ------------------------------------ |
-| `GET`   | `/health`                           | Service health snapshot              |
-| `GET`   | `/health/live`                      | Liveness probe                       |
-| `GET`   | `/health/ready`                     | Readiness probe                      |
-| `POST`  | `/api/v1/auth/register`             | Register a patient                   |
-| `POST`  | `/api/v1/auth/login`                | Password login or MFA challenge      |
-| `POST`  | `/api/v1/auth/mfa/verify`           | Complete MFA and issue a session     |
-| `POST`  | `/api/v1/auth/refresh`              | Rotate a refresh token               |
-| `POST`  | `/api/v1/auth/logout`               | Revoke the current session           |
-| `POST`  | `/api/v1/auth/verify-email`         | Consume an email verification token  |
-| `POST`  | `/api/v1/auth/resend-verification`  | Re-enqueue email verification        |
-| `POST`  | `/api/v1/auth/forgot-password`      | Enqueue a password reset             |
-| `POST`  | `/api/v1/auth/reset-password`       | Complete a password reset            |
-| `POST`  | `/api/v1/auth/mfa/setup`            | Begin TOTP enrollment                |
-| `POST`  | `/api/v1/auth/mfa/enable`           | Confirm TOTP enrollment              |
-| `POST`  | `/api/v1/auth/mfa/disable`          | Disable TOTP MFA                     |
-| `GET`   | `/api/v1/users/me`                  | Read the current profile             |
-| `PATCH` | `/api/v1/users/me`                  | Update the current profile           |
-| `POST`  | `/api/v1/users/me/password`         | Change password                      |
-| `GET`   | `/api/v1/doctors`                   | Search verified doctors              |
-| `GET`   | `/api/v1/doctors/{id}`              | Read a verified doctor profile       |
-| `GET`   | `/api/v1/doctors/{id}/availability` | List bookable slots                  |
-| `POST`  | `/api/v1/bookings`                  | Reserve a slot (patient, idempotent) |
-| `GET`   | `/api/v1/bookings`                  | List visible consultations           |
-| `GET`   | `/api/v1/bookings/{id}`             | Read a consultation                  |
-| `POST`  | `/api/v1/bookings/{id}/cancel`      | Cancel a consultation (idempotent)   |
-| `POST`  | `/api/v1/bookings/{id}/reschedule`  | Move a consultation (idempotent)     |
-| `POST`  | `/api/v1/bookings/{id}/join-token`  | Issue a short-lived join token       |
-| `POST`  | `/api/v1/bookings/{id}/start`       | Start a consultation (doctor)        |
-| `POST`  | `/api/v1/bookings/{id}/complete`    | Complete a consultation (doctor)     |
-| `POST`  | `/api/v1/bookings/{id}/no-show`     | Mark a no-show (doctor/admin)        |
-| `GET`   | `/api/v1/admin/audit-logs`          | Search audit metadata (admin)        |
-| `GET`   | `/api/v1/admin/audit-logs/verify`   | Verify the audit hash chain (admin)  |
+The seed prints these values:
 
-Public routes are health, registration, login, refresh, email/password recovery, MFA challenge verification, and doctor discovery/availability. Every other route requires a bearer access token; booking and consultation routes additionally enforce role and resource ownership. State-changing booking routes require an `Idempotency-Key` header.
+- Password for every seeded account: `DemoPass!2026`
+- TOTP secret for seeded doctors/admins: `JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP`
+- Admin: `admin@amrutam.local`
+- Doctors: e.g. `aarav.mehta@amrutam.local` (Cardiology)
+- Patients: `patient1@amrutam.local` … `patient20@amrutam.local`
 
-Health routes are intentionally served outside the `/api/v1` prefix so orchestrators can probe them without versioning. All other routes live under `/api/v1`.
+These credentials are local-only. Never use them outside a disposable demo environment.
 
-Every response includes an `x-request-id` header. A client-supplied value is accepted only when it matches `[A-Za-z0-9._:-]{1,128}`; otherwise a UUID is generated. Errors use a consistent envelope:
+## API
 
-```json
-{
-  "error": {
-    "code": "NOT_FOUND",
-    "message": "Cannot GET /api/v1/unknown",
-    "requestId": "0d3d5e3e-3d6b-4f3c-9c0d-6f8e0f0f0f0f"
-  }
-}
-```
+The contract is the source of truth: [`openapi/openapi.yaml`](openapi/openapi.yaml). It covers 56 operations and includes the shared error envelope, idempotency headers, rate-limit headers, cursor pagination, UTC timestamps, and integer minor-unit money.
 
-## Commands
+Key groups:
 
-| Command                 | Purpose                                           |
-| ----------------------- | ------------------------------------------------- |
-| `make up` / `make down` | Start or stop local infrastructure                |
-| `make reset`            | Stop infrastructure and delete volumes            |
-| `make dev`              | Start infrastructure, then the API in watch mode  |
-| `make app`              | Build and run the API container with dependencies |
-| `make build`            | Compile to `dist/`                                |
-| `make test`             | Run unit and end-to-end tests                     |
-| `make test-cov`         | Run tests with coverage                           |
-| `make lint`             | ESLint (type-aware)                               |
-| `make typecheck`        | `tsc --noEmit`                                    |
-| `make check`            | Lint, typecheck, and tests                        |
-| `make format`           | Prettier                                          |
-| `make db-migrate`       | Apply pending SQL migrations                      |
-| `make db-rollback`      | Roll back the latest migration                    |
-| `make db-status`        | Show applied and pending migrations               |
-| `make db-seed`          | Load deterministic demo data (development only)   |
-| `npm run api:validate`  | Lint the OpenAPI 3.1 contract                     |
-| `npm run api:generate`  | Regenerate the TypeScript client                  |
-| `npm run api:check`     | Validate the contract and typecheck the client    |
+| Group         | Examples                                                                                                        |
+| ------------- | --------------------------------------------------------------------------------------------------------------- |
+| Health        | `/health`, `/health/live`, `/health/ready`                                                                      |
+| Auth/MFA      | register, login, refresh, logout, email verification, password reset, TOTP setup/enable/disable, MFA verify     |
+| Users         | `GET/PATCH /api/v1/users/me`, change password                                                                   |
+| Doctors       | search, detail, public availability, authenticated own-availability list/create/remove                          |
+| Bookings      | create, list/detail, cancel, reschedule, join-token, start, complete, no-show                                   |
+| Prescriptions | draft/update, sign, void, list/detail, signed document content                                                  |
+| Payments      | intent, confirm, read/list, refund, HMAC provider webhooks                                                      |
+| Admin         | doctor list/verification, analytics overview/consultations/revenue/utilization/specialties, audit search/verify |
 
-## API contract
+Public routes are deliberately narrow: health/metrics (ops), registration/login/refresh/recovery/MFA challenge, doctor discovery/availability, and payment webhooks (HMAC capability). Everything else requires a bearer token.
 
-The source of truth is [`openapi/openapi.yaml`](openapi/openapi.yaml). It covers health, auth/MFA, profiles, doctor discovery and availability, bookings and consultation lifecycle, payments and signed webhooks, prescriptions, admin verification, analytics, and audit search.
-
-Conventions are defined once in the contract:
-
-- bearer access tokens, rotating refresh tokens, and server-side role/ownership checks;
-- required `Idempotency-Key` headers on unsafe clinical and payment writes;
-- opaque cursor pagination with a 100-row cap;
-- the shared `{ error: { code, message, requestId, details? } }` envelope;
-- `X-Request-Id`, rate-limit headers, and `Retry-After` on throttled responses;
-- RFC 3339 UTC timestamps and integer minor-unit money.
+Example patient journey:
 
 ```bash
-npm run api:validate              # Redocly lint against the recommended rules
-npm run api:generate              # refresh clients/typescript/generated/api.ts
-npm run api:check                 # validate + typecheck the generated client
+BASE=http://localhost:3000/api/v1
+TOKEN=$(curl -fsS -X POST "$BASE/auth/login" -H 'content-type: application/json' \
+  -d '{"email":"patient1@amrutam.local","password":"DemoPass!2026"}' | jq -r .accessToken)
+
+DOCTOR=$(curl -fsS "$BASE/doctors?specialization=Cardiology&limit=1" | jq -r '.data[0].id')
+FROM=$(node -e 'console.log(new Date().toISOString())')
+TO=$(node -e 'console.log(new Date(Date.now() + 7 * 86400000).toISOString())')
+SLOT=$(curl -fsS "$BASE/doctors/$DOCTOR/availability?from=$(jq -rn --arg v "$FROM" '$v|@uri')&to=$(jq -rn --arg v "$TO" '$v|@uri')&limit=1" | jq -r '.data[0].id')
+
+CONSULT=$(curl -fsS -X POST "$BASE/bookings" -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -H "idempotency-key: demo-$(date +%s)" \
+  -d "{\"slotId\":\"$SLOT\"}" | jq -r .id)
+
+curl -fsS -X POST "$BASE/bookings/$CONSULT/payments" -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -H "idempotency-key: pay-$(date +%s)" \
+  -d '{"provider":"mock"}' | jq
 ```
 
-Generated types and one function per operation are committed under [`clients/typescript`](clients/typescript/README.md), so contract drift is reviewable in diffs.
+Retry-sensitive domain writes (availability, bookings, consultations, prescriptions, payments, admin verification) require `Idempotency-Key`. Repeat a request with the same key and body to get the original response (`Idempotency-Replayed: true`); reuse the key with a different body and the API returns `422 IDEMPOTENCY_KEY_REUSED`.
 
-## Database
+Doctors manage one-off availability with `GET/POST /doctors/me/availability` and `DELETE /doctors/me/availability/{slotId}` (doctor JWT required). Slots must start in the future, be 5 minutes–4 hours long, and cannot overlap; only `available` slots can be removed.
 
-PostgreSQL is the source of truth. Migrations are paired, reversible SQL files in `db/migrations/`; the runner checksums both directions, takes a PostgreSQL advisory lock, and applies each migration transactionally. An applied migration must never be edited — add a new one instead. See [ADR 0004](docs/decisions/0004-sql-first-partitioning.md) for why the project is SQL-first and how partitioning is applied.
+Run the complete scripted journey (login → search → availability → booking → mock payment → cancellation) against a seeded API:
 
 ```bash
-make up
-npm run db:migrate          # apply all pending migrations
-npm run db:status           # show applied/pending files
-npm run db:rollback         # roll back one migration
-npm run db:rollback -- --steps 3
-npm run db:rollback -- --all
-npm run db:seed             # deterministic admin, doctors, patients, slots, history
+API_BASE_URL=http://localhost:3000 ./scripts/demo.sh
 ```
 
-The seed is idempotent and intended for local demos and load tests. It prints the local demo password and TOTP secret; every seeded account uses password `DemoPass!2026`, and seeded doctors/admins use the printed shared TOTP secret. These credentials are deliberately local-only. The seed refuses to run with `NODE_ENV=production` unless `SEED_ALLOW=true` is explicitly set, and it requires the same `AUTH_ENCRYPTION_KEY` used by the running API so seeded TOTP secrets can be decrypted.
+The script prints the created IDs/statuses. With the worker running, the cancellation's `payment.refund_requested` outbox event is processed into the refund ledger and audit trail.
 
-Migrations and seeds use `DATABASE_URL`. Set `POSTGRES_PORT` and `DATABASE_URL` together when changing local ports (the example defaults to 5432; a local `.env` can use another port). Production images contain the compiled migration CLI and the `db/` directory; run `node dist/database/cli.js up` before starting a new API revision.
+Generated client:
+
+```bash
+npm run api:validate   # Redocly
+npm run api:generate   # regenerate clients/typescript/generated/api.ts
+npm run api:check      # validate + typecheck generated client
+```
 
 ## Configuration
 
-Configuration is validated at startup with Zod; invalid values fail fast with a readable error. See [`.env.example`](.env.example) for the full list.
+Configuration is validated at startup with Zod; missing/weak secrets fail fast. The full list is in [`.env.example`](.env.example). Important values:
 
-| Variable                                           | Default                 | Notes                                                          |
-| -------------------------------------------------- | ----------------------- | -------------------------------------------------------------- |
-| `NODE_ENV`                                         | `development`           | `development` \| `test` \| `production`                        |
-| `HOST` / `PORT`                                    | `0.0.0.0` / `3000`      | HTTP bind address                                              |
-| `API_GLOBAL_PREFIX`                                | `api/v1`                | Prefix for all non-health routes                               |
-| `BODY_LIMIT_BYTES`                                 | `1048576`               | Maximum request body                                           |
-| `TRUST_PROXY`                                      | `true`                  | Honour `X-Forwarded-*` behind a load balancer                  |
-| `CORS_ORIGINS`                                     | localhost clients       | Comma-separated allow list                                     |
-| `LOG_LEVEL`                                        | `info`                  | `trace` … `fatal`, `silent`                                    |
-| `LOG_PRETTY`                                       | auto                    | Pretty in development, JSON elsewhere                          |
-| `DATABASE_URL`                                     | local Postgres          | PostgreSQL connection string                                   |
-| `DATABASE_POOL_MAX`                                | `10`                    | PostgreSQL pool size                                           |
-| `REDIS_URL`                                        | local Redis             | Redis connection string                                        |
-| `CACHE_ENABLED`                                    | `true`                  | Cache public doctor discovery; tests disable it                |
-| `APP_PUBLIC_URL`                                   | `http://localhost:3000` | Public base URL used in links                                  |
-| `JWT_ACCESS_SECRET`                                | required                | Access-token HMAC key, 32+ characters                          |
-| `JWT_MFA_SECRET`                                   | required                | Separate MFA challenge-token key                               |
-| `AUTH_TOKEN_PEPPER`                                | required                | HMAC pepper for opaque refresh/email tokens                    |
-| `AUTH_ENCRYPTION_KEY`                              | required                | Base64 32-byte AES-256-GCM key                                 |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                  | `true`                  | Set `false` only for local/test setups without an email worker |
-| `AUTH_ACCESS_TOKEN_TTL_SECONDS`                    | `900`                   | Access token lifetime                                          |
-| `AUTH_REFRESH_TOKEN_TTL_SECONDS`                   | `2592000`               | Refresh session lifetime                                       |
-| `AUTH_MAX_LOGIN_ATTEMPTS` / `AUTH_LOCKOUT_SECONDS` | `5` / `900`             | Lockout policy                                                 |
-| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_SECONDS`     | `300` / `60`            | Global per-IP limit                                            |
+| Variable                                                                                                    | Default            | Notes                                                               |
+| ----------------------------------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------- |
+| `DATABASE_URL` / `DATABASE_POOL_MAX`                                                                        | local / `10`       | PostgreSQL; use PgBouncer at sustained scale                        |
+| `REDIS_URL` / `CACHE_ENABLED`                                                                               | local / `true`     | Cache is optional and fail-open                                     |
+| `JWT_ACCESS_SECRET`, `JWT_MFA_SECRET`, `AUTH_TOKEN_PEPPER`, `AUTH_ENCRYPTION_KEY`, `PAYMENT_WEBHOOK_SECRET` | required           | Independent high-entropy secrets; encryption key is base64 32 bytes |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                                                           | `true`             | Set `false` only for local/test without an email adapter            |
+| `AUTH_ACCESS_TOKEN_TTL_SECONDS`                                                                             | `900`              | Access tokens                                                       |
+| `AUTH_REFRESH_TOKEN_TTL_SECONDS`                                                                            | `2592000`          | Rotating refresh sessions                                           |
+| `PRESCRIPTION_DOCUMENT_URL_TTL_SECONDS`                                                                     | `300`              | Signed capability URL TTL                                           |
+| `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_SECONDS`                                                              | `300` / `60`       | Global per-IP limit                                                 |
+| `OUTBOX_*`, `SCHEDULER_INTERVAL_MS`                                                                         | see `.env.example` | Worker retry/backoff/batch tuning                                   |
+| `WORKER_METRICS_PORT`                                                                                       | `9464`             | Worker health/metrics server                                        |
+| `OTEL_ENABLED` / `OTEL_EXPORTER_OTLP_ENDPOINT`                                                              | `false` / local    | Enable tracing; Compose enables it                                  |
 
-Secrets are supplied through environment variables and are never committed or given defaults. `npm run env:secrets` fills missing local values without printing them; run it only against a development `.env`.
-
-## Project structure
-
-```
-src/
-  cache/           # fail-open Redis cache-aside service
-  common/          # filters, guards, auth decorators, security primitives, logging
-  config/          # zod env schema and typed config service
-  database/        # pool, migration runner, CLI, deterministic seed
-  modules/auth/    # registration, sessions, MFA, password/email flows
-  modules/users/   # current-user profile endpoints
-  modules/audit/   # tamper-evident audit append, search, chain verification
-  modules/health/  # liveness and readiness endpoints
-  app.module.ts    # composition root and global guards
-  bootstrap.ts     # startup, adapters, shutdown
-  main.ts          # entrypoint
-db/migrations/     # paired, reversible SQL migrations
-openapi/           # OpenAPI 3.1 contract
-clients/typescript/# generated typed API client
-scripts/           # local developer utilities (never production secrets)
-test/              # end-to-end tests and helpers
-infra/             # observability configuration
-docs/decisions/    # architecture decision records
-```
-
-Module layout is intentionally folder-per-domain (`identity`, `doctors`, `scheduling`, `consultations`, `prescriptions`, `payments`, `analytics`, `audit`) as each phase lands.
-
-## Observability
-
-The Compose stack includes an OpenTelemetry collector receiving OTLP on `4317`/`4318`, Prometheus scraping the collector, Tempo for traces, Loki for logs, and Grafana provisioned with all three datasources. Application-level tracing, metrics, and dashboards are added in Phase 3 (task 14); until then the stack is ready to receive data.
-
-## Testing
+Generate local secrets:
 
 ```bash
-npm test              # unit + e2e; requires a migrated/seeded test database
-npm run test:unit     # src/**/*.spec.ts
-npm run test:e2e      # test/**/*.e2e-spec.ts
-npm run test:cov      # coverage report
+npm run env:secrets
 ```
 
-The auth/audit e2e suite expects PostgreSQL. Create a dedicated database, apply migrations, and seed it with the same test encryption key (the test harness uses `Buffer.alloc(32, 7).toString('base64')` by default):
+The script only fills empty values in `.env`, never overwrites existing values, and does not print them. In production, use AWS Secrets Manager + External Secrets/Sealed Secrets; do not deploy env files.
+
+## Database and migrations
+
+Migrations are paired, reversible SQL files in `db/migrations/`. The runner checksums both directions, takes a PostgreSQL advisory lock, and applies each migration transactionally. Never edit an applied migration.
 
 ```bash
-createdb -h localhost -p 5432 -U amrutam amrutam_test
-DATABASE_URL=postgresql://amrutam:amrutam@localhost:5432/amrutam_test npm run db:migrate
-DATABASE_URL=postgresql://amrutam:amrutam@localhost:5432/amrutam_test \
-  AUTH_ENCRYPTION_KEY="$(node -e "process.stdout.write(Buffer.alloc(32,7).toString('base64'))")" \
-  npm run db:seed
+npm run db:migrate
+npm run db:status
+npm run db:rollback                 # one step
+npm run db:rollback -- --steps 3
+npm run db:seed
+```
+
+Production images include the migration CLI and `db/` directory:
+
+```bash
+node dist/database/cli.js up
+```
+
+The seed refuses to run in production unless `SEED_ALLOW=true`. It is deterministic and safe to run after a reset. `consultations` is hash-partitioned (16 partitions). `audit_logs` is monthly range-partitioned; the worker pre-creates partitions.
+
+## Worker, outbox, and scheduled jobs
+
+```bash
+npm run jobs:run                 # local worker
+npm run jobs:start               # compiled worker (dist/worker.js)
+npm run jobs:status              # backlog + dead-letter inspection
+npm run jobs:replay -- --id ID   # replay one dead-letter event
+npm run jobs:replay -- --all     # replay up to 1000
+```
+
+The worker processes `notification.email`, `consultation.reminder_due`, `payment.refund_requested`, and other domain events. The default notification adapter is a PHI-safe logging boundary; plug in SES/Twilio/FCM for real delivery. Scheduled jobs cover reminders, no-show detection, expired slot holds, cancellation refund reconciliation, audit partitions, and idempotency cleanup. All scheduled jobs use advisory locks so replicas are safe.
+
+Observable metrics include outbox pending/processing/dead-letter depth, processed outcomes, and business event counters.
+
+## Testing and CI
+
+```bash
+npm test              # pretest migrates, resets, and seeds the dedicated test DB
+npm run test:unit
+npm run test:e2e
+npm run test:cov
+```
+
+`npm test` refuses a database URL that does not look like a test database. It runs 18 suites / 111 tests. Provide one:
+
+```bash
 TEST_DATABASE_URL=postgresql://amrutam:amrutam@localhost:5432/amrutam_test npm test
 ```
 
-Tests run against the Fastify instance through `app.inject()`, so they exercise the real middleware, filters, and plugins without binding a port. The e2e suite uses unique account identifiers so it can run repeatedly without a database wipe; audit records are intentionally retained.
+The pretest script runs migrations up, truncates all public tables except `schema_migrations`, and reseeds. Tests run sequentially because suites share seeded slot inventory. Coverage currently concentrates on e2e behavior: auth/session/MFA, idempotency/concurrency, booking/reschedule/cancel, prescriptions, payments/webhooks/refunds, admin verification, analytics, outbox/DLQ, metrics, and health.
+
+Local quality gate:
+
+```bash
+npm run format:check
+npm run typecheck
+npm run lint
+npm run build
+npm run api:check
+npm test
+```
+
+GitHub Actions runs the same checks with PostgreSQL/Redis services, plus `npm audit`, gitleaks, Trivy filesystem/image scans, SBOM generation, dependency review, and CodeQL. The runtime image is a non-root Node 22 Alpine image with npm/npx/yarn removed, so package-manager tooling and its bundled dependencies are not shipped. `cd-staging.yml` builds an immutable image, runs the migration Job, deploys Kustomize, smoke-tests, and rolls back the Deployments on failure.
+
+## Observability
+
+| Signal                | Where                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| API metrics           | `GET /metrics` on the API (Prometheus scrape; restrict at the network edge)                              |
+| Worker metrics/health | `http://worker:9464/metrics`, `/health/live`                                                             |
+| Dashboard             | Grafana → Amrutam → **Amrutam — API and worker overview** (`http://localhost:3001`, local `admin/admin`) |
+| Alerts                | [`infra/observability/prometheus/alerts.yml`](infra/observability/prometheus/alerts.yml)                 |
+| Traces                | Tempo, collected from API and worker OTLP (`OTEL_ENABLED=true`)                                          |
+| Logs                  | Loki, structured pino JSON; request IDs/trace IDs                                                        |
+
+Alerts cover API/worker down, 5xx ratio >1%, GET p95 >200 ms, write p95 >500 ms, outbox backlog >100, and any dead-letter event. Metric labels use Fastify route templates to avoid cardinality explosion.
+
+Enable tracing locally:
+
+```bash
+OTEL_ENABLED=true OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 npm run start:dev
+```
+
+Trace auto-instrumentation covers HTTP, PostgreSQL, and Redis. Outbox processing starts an `outbox.process` span with event ID/type attributes, so worker activity can be correlated with the outbox record. Producer-to-worker trace-context linking across the async boundary is a future enhancement.
+
+## Security
+
+The security package is [`docs/security.md`](docs/security.md). Highlights:
+
+- Deny-by-default JWT + roles guards and explicit `@Public` allowlist.
+- Argon2id passwords, distinct MFA JWT secret, HMAC-hashed rotating refresh tokens with reuse detection, TOTP and recovery codes, account lockout, session revocation.
+- AES-256-GCM TOTP secrets; HMAC domain separation for refresh tokens, verification tokens, and prescription capability URLs.
+- PostgreSQL parameterisation, strict Zod validation, server-derived fees, append-only refunds, provider webhook raw-body HMAC + event dedupe.
+- Hash-chained audit logs with before/after hashes and PHI-free metadata. State change, audit, and outbox commit atomically.
+- Secret hygiene: no defaults, startup fail-fast, `.env` ignored, TLS managed data services, KMS in Terraform, External Secrets in Kubernetes.
+- CI security gates: audit, gitleaks, Trivy, SBOM, CodeQL, dependency review.
+
+Residual risks are listed in the security document: no bundled email provider, global (not per-endpoint) rate limit, application-level audit anchoring to WORM, mock payment adapter, and no field-level encryption for free-text clinical notes. These are explicit production integration items, not silent omissions.
+
+## Deployment and IaC
+
+Terraform (`infra/terraform`) provisions VPC, Multi-AZ RDS PostgreSQL with PITR/KMS, Multi-AZ ElastiCache Redis, secrets, S3 exports, alarms, and security groups.
+
+Kubernetes (`infra/k8s`) deploys non-root API/worker Deployments with read-only root filesystems, HPA, PDB, probes, topology spread, ingress, and ingress network policies. The CD workflow applies a separate migration Job and waits for completion before rolling out the staging overlay.
+
+```bash
+cd infra/terraform
+terraform init && terraform validate && terraform plan
+
+cd ../..
+kubectl apply -k infra/k8s/overlays/staging
+```
+
+See [`infra/terraform/README.md`](infra/terraform/README.md) and [`infra/k8s/README.md`](infra/k8s/README.md). Backup/restore: [`docs/backup-dr.md`](docs/backup-dr.md). Incident/DLQ/deploy runbooks: [`docs/runbooks.md`](docs/runbooks.md).
+
+## Performance and scale
+
+- Target 100k consultations/day, p95 reads <200 ms, p95 writes <500 ms, 99.95% availability.
+- k6 scenario: [`load/k6/booking-flow.js`](load/k6/booking-flow.js) with browse and book/cancel thresholds.
+- Read replicas, connection pooling/PgBouncer, HPA, partition pruning, bounded date ranges, cache-aside, and indexed analytics paths.
+- The outbox polling interval, batch size, retry cap, and lock recovery are configurable.
+
+Run k6 against a fresh seeded environment:
+
+```bash
+API_BASE_URL=http://localhost:3000 k6 run load/k6/booking-flow.js
+```
+
+## Project layout
+
+```text
+src/
+  cache/          # fail-open Redis cache
+  common/         # guards, filters, idempotency, auth/security primitives, logging
+  config/         # Zod environment schema + typed config
+  database/       # pool, migration runner/CLI, deterministic seed
+  metrics/        # Prometheus registry, HTTP/outbox metrics, /metrics
+  modules/        # auth, users, doctors, bookings, prescriptions, payments,
+                  # admin, analytics, audit, health, jobs
+  instrumentation.ts # optional OTel SDK initialization
+  worker.ts       # outbox/scheduler worker entrypoint
+  main.ts         # API entrypoint
+db/migrations/    # paired reversible SQL
+openapi/          # OpenAPI 3.1 contract
+clients/typescript# generated typed client
+test/             # e2e suites, reset/seed pretest, test app factory
+infra/            # Terraform, Kubernetes, observability
+load/k6/          # load scenarios
+docs/             # architecture, security, backup/DR, runbooks, ADRs
+```
+
+## Known limitations
+
+These are explicitly out of scope or need production integration; see [security.md](docs/security.md#8-residual-risks-and-explicit-non-goals):
+
+1. The notification adapter logs PHI-safe delivery metadata; no real email/SMS vendor is configured.
+2. The payment provider is a local mock/ledger. Production must implement idempotent provider authorise/capture/refund calls and secret rotation.
+3. Rate limiting is global per IP. Add edge/WAF and per-endpoint limits before exposure to hostile traffic.
+4. Audit chain is internal to PostgreSQL; anchor chain heads to external WORM storage for stronger non-repudiation.
+5. Analytics use indexed queries rather than materialised rollups; add read replicas/rollups as data volume grows.
+6. k6 and restore drills are documented and scripted but were not executed against a provisioned multi-AZ AWS environment as part of this repository.
 
 ## Documentation
 
-- [Architecture decisions](docs/decisions/README.md)
-- [Implementation roadmap](plans/2026-10-27-amrutam-telemedicine-backend-v1.md)
+- [Architecture](docs/architecture.md)
+- [Security, STRIDE, OWASP, data classification](docs/security.md)
+- [Backup and disaster recovery](docs/backup-dr.md)
+- [Runbooks](docs/runbooks.md)
+- [Architecture decision records](docs/decisions/README.md)
+- [OpenAPI contract](openapi/openapi.yaml)
 - [Task tracker](todo.md)
-- Architecture document, ERD, OpenAPI schema, threat model, and runbooks are added in their respective phases.
+- [Implementation roadmap](plans/2026-10-27-amrutam-telemedicine-backend-v1.md)

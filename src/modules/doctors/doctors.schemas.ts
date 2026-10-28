@@ -3,6 +3,8 @@ import { z } from 'zod';
 const cursor = z.string().min(1).max(2_000).optional();
 const limit = z.coerce.number().int().min(1).max(50).default(20);
 const dateTime = z.coerce.date();
+const MIN_SLOT_DURATION_MS = 5 * 60_000;
+const MAX_SLOT_DURATION_MS = 4 * 60 * 60_000;
 
 export const listDoctorsQuerySchema = z
   .object({
@@ -50,5 +52,34 @@ export const availabilityQuerySchema = z
 
 export const doctorIdSchema = z.uuid();
 
+export const createAvailabilitySlotSchema = z
+  .object({
+    startsAt: dateTime,
+    endsAt: dateTime,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const duration = value.endsAt.getTime() - value.startsAt.getTime();
+
+    if (duration < MIN_SLOT_DURATION_MS) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endsAt'],
+        message: 'A slot must be at least 5 minutes long',
+      });
+    }
+
+    if (duration > MAX_SLOT_DURATION_MS) {
+      context.addIssue({
+        code: 'custom',
+        path: ['endsAt'],
+        message: 'A slot cannot be longer than 4 hours',
+      });
+    }
+  });
+
+export const availabilitySlotIdSchema = z.uuid();
+
 export type ListDoctorsQuery = z.infer<typeof listDoctorsQuerySchema>;
 export type AvailabilityQuery = z.infer<typeof availabilityQuerySchema>;
+export type CreateAvailabilitySlotInput = z.infer<typeof createAvailabilitySlotSchema>;

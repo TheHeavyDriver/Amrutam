@@ -1,13 +1,20 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import {
   CacheService,
   DOCTOR_AVAILABILITY_TTL_SECONDS,
   DOCTOR_DETAIL_TTL_SECONDS,
   DOCTOR_LIST_TTL_SECONDS,
 } from '../../cache/cache.service.js';
+import type { AuthenticatedUser, RequestMetadata } from '../../common/auth/auth-user.js';
 import { ApiException } from '../../common/errors/api-exception.js';
 import { ErrorCodes } from '../../common/errors/error-codes.js';
+import {
+  IdempotencyService,
+  type IdempotentExecutionResult,
+} from '../../common/idempotency/idempotency.service.js';
 import { DatabaseService } from '../../database/database.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import {
   decodeAvailabilityCursor,
   decodeDoctorCursor,
@@ -15,7 +22,11 @@ import {
   encodeDoctorCursor,
 } from './doctors.cursor.js';
 import type { DoctorCursor } from './doctors.cursor.js';
-import type { AvailabilityQuery, ListDoctorsQuery } from './doctors.schemas.js';
+import type {
+  AvailabilityQuery,
+  CreateAvailabilitySlotInput,
+  ListDoctorsQuery,
+} from './doctors.schemas.js';
 import type {
   AvailabilityListResponse,
   AvailabilitySlot,
@@ -72,11 +83,17 @@ function addDays(value: Date, days: number): Date {
   return new Date(value.getTime() + days * DAY_MS);
 }
 
+function isPostgresError(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === code;
+}
+
 @Injectable()
 export class DoctorsService {
   constructor(
     private readonly database: DatabaseService,
     private readonly cache: CacheService,
+    private readonly idempotency: IdempotencyService,
+    private readonly audit: AuditService,
   ) {}
 
   async list(query: ListDoctorsQuery): Promise<DoctorListResponse> {
@@ -117,8 +134,188 @@ export class DoctorsService {
     doctorId: string,
     query: AvailabilityQuery,
   ): Promise<AvailabilityListResponse> {
+    const { from, to } = this.availabilityRange(query, true);
+    const cacheKey = `amrutam:v1:doctors:availability:${doctorId}:${CacheService.keyHash({
+      from: from.toISOString(),
+      to: to.toISOString(),
+      cursor: query.cursor ?? null,
+      limit: query.limit,
+    })}`;
+
+    return this.cache.getOrSet(cacheKey, DOCTOR_AVAILABILITY_TTL_SECONDS, async () => {
+      await this.assertVerifiedDoctor(doctorId);
+      return this.queryAvailability(doctorId, from, to, query, true);
+    });
+  }
+
+  async listOwnAvailability(
+    user: AuthenticatedUser,
+    query: AvailabilityQuery,
+  ): Promise<AvailabilityListResponse> {
+    const { from, to } = this.availabilityRange(query, false);
+    await this.assertDoctor(user.id);
+
+    return this.queryAvailability(user.id, from, to, query, false);
+  }
+
+  async createAvailabilitySlot(
+    user: AuthenticatedUser,
+    idempotencyKey: string | undefined,
+    input: CreateAvailabilitySlotInput,
+    request: RequestMetadata,
+  ): Promise<IdempotentExecutionResult<AvailabilitySlot>> {
+    const result = await this.idempotency.execute<AvailabilitySlot>(
+      {
+        actor: user,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/doctors/me/availability',
+        body: {
+          startsAt: input.startsAt.toISOString(),
+          endsAt: input.endsAt.toISOString(),
+        },
+        request,
+      },
+      async (client) => {
+        await this.assertDoctor(user.id, client);
+
+        if (input.startsAt.getTime() <= Date.now()) {
+          throw new ApiException(HttpStatus.BAD_REQUEST, {
+            code: ErrorCodes.VALIDATION_ERROR,
+            message: 'Availability must start in the future',
+            details: [{ field: 'startsAt', message: 'Must be a future timestamp' }],
+          });
+        }
+
+        let row: AvailabilityRow;
+
+        try {
+          const { rows } = await client.query<AvailabilityRow>(
+            `INSERT INTO availability_slots (doctor_id, starts_at, ends_at)
+             VALUES ($1, $2, $3)
+             RETURNING id, doctor_id, starts_at, ends_at, status`,
+            [user.id, input.startsAt, input.endsAt],
+          );
+          row = rows[0] as AvailabilityRow;
+        } catch (error) {
+          if (isPostgresError(error, '23P01') || isPostgresError(error, '23505')) {
+            throw new ApiException(HttpStatus.CONFLICT, {
+              code: ErrorCodes.SLOT_UNAVAILABLE,
+              message: 'This slot overlaps existing availability',
+            });
+          }
+
+          throw error;
+        }
+
+        await this.audit.record(
+          {
+            actorId: user.id,
+            actorRole: user.role,
+            action: 'doctor.availability_created',
+            resourceType: 'availability_slot',
+            resourceId: row.id,
+            request,
+            after: {
+              startsAt: row.starts_at.toISOString(),
+              endsAt: row.ends_at.toISOString(),
+              status: row.status,
+            },
+            metadata: { doctorId: user.id },
+          },
+          client,
+        );
+
+        return { status: HttpStatus.CREATED, body: this.toAvailability(row) };
+      },
+    );
+
+    await this.invalidateDoctor(user.id);
+    return result;
+  }
+
+  async deleteAvailabilitySlot(
+    user: AuthenticatedUser,
+    idempotencyKey: string | undefined,
+    slotId: string,
+    request: RequestMetadata,
+  ): Promise<IdempotentExecutionResult<void>> {
+    const result = await this.idempotency.execute<void>(
+      {
+        actor: user,
+        key: idempotencyKey,
+        method: 'DELETE',
+        path: `/doctors/me/availability/${slotId}`,
+        body: null,
+        request,
+      },
+      async (client) => {
+        const { rows } = await client.query<AvailabilityRow>(
+          `SELECT id, doctor_id, starts_at, ends_at, status
+             FROM availability_slots
+            WHERE id = $1
+              AND doctor_id = $2
+            FOR UPDATE`,
+          [slotId, user.id],
+        );
+        const row = rows[0];
+
+        if (!row) {
+          throw new ApiException(HttpStatus.NOT_FOUND, {
+            code: ErrorCodes.NOT_FOUND,
+            message: 'Availability slot not found',
+          });
+        }
+
+        if (row.status !== 'available') {
+          throw new ApiException(HttpStatus.CONFLICT, {
+            code: ErrorCodes.SLOT_UNAVAILABLE,
+            message: 'Only available slots can be removed',
+          });
+        }
+
+        await client.query('DELETE FROM availability_slots WHERE id = $1', [slotId]);
+        await this.audit.record(
+          {
+            actorId: user.id,
+            actorRole: user.role,
+            action: 'doctor.availability_deleted',
+            resourceType: 'availability_slot',
+            resourceId: row.id,
+            request,
+            before: {
+              startsAt: row.starts_at.toISOString(),
+              endsAt: row.ends_at.toISOString(),
+              status: row.status,
+            },
+            after: null,
+            metadata: { doctorId: user.id },
+          },
+          client,
+        );
+
+        return { status: HttpStatus.NO_CONTENT, body: undefined };
+      },
+    );
+
+    await this.invalidateDoctor(user.id);
+    return result;
+  }
+
+  async invalidateDoctor(doctorId: string): Promise<void> {
+    await Promise.all([
+      this.cache.delete(`amrutam:v1:doctors:detail:${doctorId}`),
+      this.cache.deleteByPrefix('amrutam:v1:doctors:list:'),
+      this.cache.deleteByPrefix(`amrutam:v1:doctors:availability:${doctorId}:`),
+    ]);
+  }
+
+  private availabilityRange(
+    query: AvailabilityQuery,
+    clampToNow: boolean,
+  ): { from: Date; to: Date } {
     const now = new Date();
-    const from = query.from && query.from > now ? query.from : now;
+    const from = clampToNow && (!query.from || query.from < now) ? now : (query.from ?? now);
     const to = query.to ?? addDays(from, DEFAULT_AVAILABILITY_DAYS);
 
     if (to.getTime() - from.getTime() > MAX_AVAILABILITY_DAYS * DAY_MS) {
@@ -128,94 +325,106 @@ export class DoctorsService {
       });
     }
 
-    const cacheKey = `amrutam:v1:doctors:availability:${doctorId}:${CacheService.keyHash({
-      from: from.toISOString(),
-      to: to.toISOString(),
-      cursor: query.cursor ?? null,
-      limit: query.limit,
-    })}`;
-
-    return this.cache.getOrSet(cacheKey, DOCTOR_AVAILABILITY_TTL_SECONDS, async () => {
-      const doctor = await this.database.query<{ id: string }>(
-        `SELECT d.user_id AS id
-           FROM doctors d
-           JOIN users u ON u.id = d.user_id
-          WHERE d.user_id = $1
-            AND d.verification_status = 'verified'
-            AND u.status = 'active'`,
-        [doctorId],
-      );
-
-      if (!doctor.rows[0]) {
-        throw new ApiException(HttpStatus.NOT_FOUND, {
-          code: ErrorCodes.NOT_FOUND,
-          message: 'Doctor not found',
-        });
-      }
-
-      if (to <= from) {
-        return { data: [], page: { hasMore: false, nextCursor: null } };
-      }
-
-      const conditions = [
-        'doctor_id = $1',
-        "status = 'available'",
-        'starts_at >= $2',
-        'starts_at < $3',
-      ];
-      const values: unknown[] = [doctorId, from, to];
-
-      if (query.cursor) {
-        const cursor = decodeAvailabilityCursor(query.cursor);
-        values.push(new Date(cursor.startsAt));
-        const startsAtParameter = `$${values.length}`;
-        values.push(cursor.id);
-        const idParameter = `$${values.length}`;
-        conditions.push(
-          `(starts_at > ${startsAtParameter} OR ` +
-            `(starts_at = ${startsAtParameter} AND id > ${idParameter}))`,
-        );
-      }
-
-      values.push(query.limit + 1);
-      const limitParameter = `$${values.length}`;
-
-      const { rows } = await this.database.query<AvailabilityRow>(
-        `SELECT id, doctor_id, starts_at, ends_at, status
-           FROM availability_slots
-          WHERE ${conditions.join(' AND ')}
-          ORDER BY starts_at ASC, id ASC
-          LIMIT ${limitParameter}`,
-        values,
-      );
-
-      const hasMore = rows.length > query.limit;
-      const pageRows = hasMore ? rows.slice(0, query.limit) : rows;
-      const last = pageRows[pageRows.length - 1];
-
-      return {
-        data: pageRows.map((row) => this.toAvailability(row)),
-        page: {
-          hasMore,
-          nextCursor:
-            hasMore && last
-              ? encodeAvailabilityCursor({
-                  v: 1,
-                  startsAt: last.starts_at.toISOString(),
-                  id: last.id,
-                })
-              : null,
-        },
-      };
-    });
+    return { from, to };
   }
 
-  async invalidateDoctor(doctorId: string): Promise<void> {
-    await Promise.all([
-      this.cache.delete(`amrutam:v1:doctors:detail:${doctorId}`),
-      this.cache.deleteByPrefix('amrutam:v1:doctors:list:'),
-      this.cache.deleteByPrefix(`amrutam:v1:doctors:availability:${doctorId}:`),
-    ]);
+  private async assertVerifiedDoctor(doctorId: string): Promise<void> {
+    const doctor = await this.database.query<{ id: string }>(
+      `SELECT d.user_id AS id
+         FROM doctors d
+         JOIN users u ON u.id = d.user_id
+        WHERE d.user_id = $1
+          AND d.verification_status = 'verified'
+          AND u.status = 'active'`,
+      [doctorId],
+    );
+
+    if (!doctor.rows[0]) {
+      throw new ApiException(HttpStatus.NOT_FOUND, {
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Doctor not found',
+      });
+    }
+  }
+
+  private async assertDoctor(doctorId: string, client?: PoolClient): Promise<void> {
+    const result = client
+      ? await client.query<{ id: string }>('SELECT user_id AS id FROM doctors WHERE user_id = $1', [
+          doctorId,
+        ])
+      : await this.database.query<{ id: string }>(
+          'SELECT user_id AS id FROM doctors WHERE user_id = $1',
+          [doctorId],
+        );
+
+    if (!result.rows[0]) {
+      throw new ApiException(HttpStatus.NOT_FOUND, {
+        code: ErrorCodes.NOT_FOUND,
+        message: 'Doctor profile not found',
+      });
+    }
+  }
+
+  private async queryAvailability(
+    doctorId: string,
+    from: Date,
+    to: Date,
+    query: AvailabilityQuery,
+    onlyAvailable: boolean,
+  ): Promise<AvailabilityListResponse> {
+    if (to <= from) {
+      return { data: [], page: { hasMore: false, nextCursor: null } };
+    }
+
+    const conditions = ['doctor_id = $1', 'starts_at >= $2', 'starts_at < $3'];
+    const values: unknown[] = [doctorId, from, to];
+
+    if (onlyAvailable) {
+      conditions.push("status = 'available'");
+    }
+
+    if (query.cursor) {
+      const cursor = decodeAvailabilityCursor(query.cursor);
+      values.push(new Date(cursor.startsAt));
+      const startsAtParameter = `$${values.length}`;
+      values.push(cursor.id);
+      const idParameter = `$${values.length}`;
+      conditions.push(
+        `(starts_at > ${startsAtParameter} OR ` +
+          `(starts_at = ${startsAtParameter} AND id > ${idParameter}))`,
+      );
+    }
+
+    values.push(query.limit + 1);
+    const limitParameter = `$${values.length}`;
+
+    const { rows } = await this.database.query<AvailabilityRow>(
+      `SELECT id, doctor_id, starts_at, ends_at, status
+         FROM availability_slots
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY starts_at ASC, id ASC
+        LIMIT ${limitParameter}`,
+      values,
+    );
+
+    const hasMore = rows.length > query.limit;
+    const pageRows = hasMore ? rows.slice(0, query.limit) : rows;
+    const last = pageRows[pageRows.length - 1];
+
+    return {
+      data: pageRows.map((row) => this.toAvailability(row)),
+      page: {
+        hasMore,
+        nextCursor:
+          hasMore && last
+            ? encodeAvailabilityCursor({
+                v: 1,
+                startsAt: last.starts_at.toISOString(),
+                id: last.id,
+              })
+            : null,
+      },
+    };
   }
 
   private async queryList(query: ListDoctorsQuery): Promise<DoctorListResponse> {

@@ -219,6 +219,12 @@ export type AvailabilityListResponse = {
     data: AvailabilitySlot[];
     page: PageInfo;
 };
+export type CreateAvailabilitySlotRequest = {
+    /** Future UTC start time. */
+    startsAt: string;
+    /** End time; the slot must be between 5 minutes and 4 hours long. */
+    endsAt: string;
+};
 export type CreateBookingRequest = {
     slotId: string;
     notes?: string;
@@ -982,6 +988,120 @@ export function listDoctorAvailability(doctorId: string, { $from, to, cursor, li
     });
 }
 /**
+ * List the authenticated doctor's availability
+ */
+export function listOwnAvailability({ $from, to, cursor, limit }: {
+    $from?: string;
+    to?: string;
+    cursor?: string;
+    limit?: number;
+} = {}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.fetchJson<{
+        status: 200;
+        data: AvailabilityListResponse;
+    } | {
+        status: 400;
+        data: ErrorResponse;
+    } | {
+        status: 401;
+        data: ErrorResponse;
+    } | {
+        status: 403;
+        data: ErrorResponse;
+    } | {
+        status: 404;
+        data: ErrorResponse;
+    } | {
+        status: 500;
+        data: ErrorResponse;
+    }>(`/api/v1/doctors/me/availability${QS.query(QS.explode({
+        "from": $from,
+        to,
+        cursor,
+        limit
+    }))}`, {
+        ...opts
+    });
+}
+/**
+ * Publish a one-off availability slot
+ */
+export function createOwnAvailability(idempotencyKey: string, createAvailabilitySlotRequest: CreateAvailabilitySlotRequest, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.fetchJson<{
+        status: 201;
+        data: AvailabilitySlot;
+    } | {
+        status: 400;
+        data: ErrorResponse;
+    } | {
+        status: 401;
+        data: ErrorResponse;
+    } | {
+        status: 403;
+        data: ErrorResponse;
+    } | {
+        status: 404;
+        data: ErrorResponse;
+    } | {
+        status: 409;
+        data: ErrorResponse;
+    } | {
+        status: 422;
+        data: ErrorResponse;
+    } | {
+        status: 429;
+        data: ErrorResponse;
+    } | {
+        status: 500;
+        data: ErrorResponse;
+    }>("/api/v1/doctors/me/availability", oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: createAvailabilitySlotRequest,
+        headers: oazapfts.mergeHeaders(opts?.headers, {
+            "Idempotency-Key": idempotencyKey
+        })
+    }));
+}
+/**
+ * Remove an unbooked availability slot
+ */
+export function deleteOwnAvailability(slotId: string, idempotencyKey: string, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.fetchJson<{
+        status: 204;
+    } | {
+        status: 400;
+        data: ErrorResponse;
+    } | {
+        status: 401;
+        data: ErrorResponse;
+    } | {
+        status: 403;
+        data: ErrorResponse;
+    } | {
+        status: 404;
+        data: ErrorResponse;
+    } | {
+        status: 409;
+        data: ErrorResponse;
+    } | {
+        status: 422;
+        data: ErrorResponse;
+    } | {
+        status: 429;
+        data: ErrorResponse;
+    } | {
+        status: 500;
+        data: ErrorResponse;
+    }>(`/api/v1/doctors/me/availability/${encodeURIComponent(slotId)}`, {
+        ...opts,
+        method: "DELETE",
+        headers: oazapfts.mergeHeaders(opts?.headers, {
+            "Idempotency-Key": idempotencyKey
+        })
+    });
+}
+/**
  * Reserve a slot and create a consultation
  */
 export function createBooking(idempotencyKey: string, createBookingRequest: CreateBookingRequest, opts?: Oazapfts.RequestOpts) {
@@ -1657,6 +1777,32 @@ export function getPrescriptionDocument(prescriptionId: string, opts?: Oazapfts.
         status: 500;
         data: ErrorResponse;
     }>(`/api/v1/prescriptions/${encodeURIComponent(prescriptionId)}/document`, {
+        ...opts
+    });
+}
+/**
+ * Download a signed prescription document via a capability URL
+ */
+export function downloadPrescriptionDocument(prescriptionId: string, expires: number, signature: string, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.fetchJson<{
+        status: 200;
+        data: Blob;
+    } | {
+        status: 400;
+        data: ErrorResponse;
+    } | {
+        status: 401;
+        data: ErrorResponse;
+    } | {
+        status: 404;
+        data: ErrorResponse;
+    } | {
+        status: 500;
+        data: ErrorResponse;
+    }>(`/api/v1/prescriptions/${encodeURIComponent(prescriptionId)}/document/content${QS.query(QS.explode({
+        expires,
+        signature
+    }))}`, {
         ...opts
     });
 }

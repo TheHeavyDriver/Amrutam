@@ -20,6 +20,9 @@ export default defineConfig({
     include: ['src/**/*.spec.ts', 'test/**/*.e2e-spec.ts'],
     setupFiles: ['./test/setup-env.ts'],
     clearMocks: true,
+    // Integration suites share one migrated PostgreSQL database and seeded
+    // inventory. File-level parallelism would make slot allocation racy.
+    fileParallelism: false,
     testTimeout: 30_000,
     coverage: {
       provider: 'v8',

@@ -8,5 +8,6 @@ Short, immutable records of decisions that shape the system. Each entry states t
 | [0002](0002-rest-openapi.md)           | REST with an OpenAPI 3.1 contract                     | Accepted |
 | [0003](0003-idempotency-keys.md)       | Database-backed idempotency for unsafe writes         | Accepted |
 | [0004](0004-sql-first-partitioning.md) | SQL-first PostgreSQL with partitioned clinical tables | Accepted |
+| [0005](0005-postgres-outbox.md)        | PostgreSQL outbox and scheduler instead of BullMQ     | Accepted |
 
 New decisions get the next number and are never rewritten; supersede an old ADR with a new one that links back to it.

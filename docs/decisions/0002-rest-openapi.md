@@ -9,7 +9,7 @@ The API is workflow-centric: authentication, availability lookup, booking, consu
 
 ## Decision
 
-Expose a versioned REST API (`/api/v1`) and publish an OpenAPI 3.1 document as the contract. Use cursor pagination, a shared error envelope, and the `Idempotency-Key` header for all unsafe writes. The schema will be generated and validated in CI so implementation, tests, and documentation cannot drift.
+Expose a versioned REST API (`/api/v1`) and publish an OpenAPI 3.1 document as the contract. Use cursor pagination, a shared error envelope, and the `Idempotency-Key` header for retry-sensitive domain writes. The schema will be generated and validated in CI so implementation, tests, and documentation cannot drift.
 
 ## Consequences
 

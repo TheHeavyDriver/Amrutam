@@ -1,0 +1,21 @@
+title = "Amrutam secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures and documentation examples use non-production values."
+paths = [
+  '''(^|/)test/''',
+  '''(^|/)docs/''',
+  '''(^|/)plans/''',
+  '''(^|/)\.env\.example$''',
+  '''(^|/)\.gitleaks\.toml$''',
+  '''(^|/)src/config/.*\.spec\.ts$''',
+  '''(^|/)src/.*\.spec\.ts$''',
+]
+regexes = [
+  '''test-[a-z-]*secret''',
+  '''DemoPass!2026''',
+  '''JBSWY3DPEHPK3PXP''',
+]

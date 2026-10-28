@@ -30,12 +30,28 @@ export class AppConfigService {
     return this.configService.get('redis', { infer: true });
   }
 
+  get payments(): AppConfig['payments'] {
+    return this.configService.get('payments', { infer: true });
+  }
+
+  get prescriptions(): AppConfig['prescriptions'] {
+    return this.configService.get('prescriptions', { infer: true });
+  }
+
   get auth(): AppConfig['auth'] {
     return this.configService.get('auth', { infer: true });
   }
 
   get logging(): AppConfig['logging'] {
     return this.configService.get('logging', { infer: true });
+  }
+
+  get jobs(): AppConfig['jobs'] {
+    return this.configService.get('jobs', { infer: true });
+  }
+
+  get tracing(): AppConfig['tracing'] {
+    return this.configService.get('tracing', { infer: true });
   }
 
   get isProduction(): boolean {

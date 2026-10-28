@@ -24,6 +24,18 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000
 
+# npm/npx/corepack/yarn are build-time tooling. Removing them keeps the runtime
+# image minimal and avoids shipping package-manager bundled dependencies.
+RUN rm -rf \
+      /usr/local/lib/node_modules/npm \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm \
+      /usr/local/bin/npx \
+      /usr/local/bin/corepack \
+      /opt/yarn-v1.22.22 \
+      /usr/local/bin/yarn \
+      /usr/local/bin/yarnpkg
+
 COPY --from=production-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node db ./db

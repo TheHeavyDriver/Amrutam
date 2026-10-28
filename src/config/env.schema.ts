@@ -64,6 +64,7 @@ export const envSchema = z.object({
   JWT_MFA_SECRET: requiredSecret,
   AUTH_TOKEN_PEPPER: requiredSecret,
   AUTH_ENCRYPTION_KEY: encryptionKey,
+  PAYMENT_WEBHOOK_SECRET: requiredSecret,
 
   AUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
   AUTH_MFA_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(1_800).default(300),
@@ -84,8 +85,22 @@ export const envSchema = z.object({
   AUTH_MAX_LOGIN_ATTEMPTS: z.coerce.number().int().min(3).max(20).default(5),
   AUTH_LOCKOUT_SECONDS: z.coerce.number().int().min(30).max(86_400).default(900),
 
+  PRESCRIPTION_DOCUMENT_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(3_600).default(300),
+
   RATE_LIMIT_MAX: z.coerce.number().int().min(10).max(10_000).default(300),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).max(3_600).default(60),
+
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(250).max(60_000).default(1_000),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(200).default(25),
+  OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(10),
+  OUTBOX_LOCK_TIMEOUT_SECONDS: z.coerce.number().int().min(10).max(3_600).default(60),
+  OUTBOX_BACKOFF_BASE_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+  OUTBOX_BACKOFF_MAX_MS: z.coerce.number().int().min(100).max(3_600_000).default(300_000),
+  SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(30_000),
+  WORKER_METRICS_PORT: z.coerce.number().int().min(1).max(65_535).default(9_464),
+
+  OTEL_ENABLED: booleanFromString('false'),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.url().default('http://localhost:4318'),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -1,6 +1,9 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Header, HttpStatus, Injectable } from '@nestjs/common';
 import { Public } from '../../common/auth/public.decorator.js';
+import { ApiException } from '../../common/errors/api-exception.js';
+import { ErrorCodes } from '../../common/errors/error-codes.js';
 import { AppConfigService } from '../../config/app-config.service.js';
+import { DatabaseService } from '../../database/database.service.js';
 
 export interface HealthResponse {
   status: 'ok';
@@ -11,10 +14,14 @@ export interface HealthResponse {
   timestamp: string;
 }
 
+@Injectable()
 @Public()
 @Controller('health')
 export class HealthController {
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly database: DatabaseService,
+  ) {}
 
   @Get()
   @Header('Cache-Control', 'no-store')
@@ -30,7 +37,16 @@ export class HealthController {
 
   @Get('ready')
   @Header('Cache-Control', 'no-store')
-  ready(): HealthResponse {
+  async ready(): Promise<HealthResponse> {
+    try {
+      await withTimeout(this.database.ping(), 2_000);
+    } catch {
+      throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, {
+        code: ErrorCodes.SERVICE_UNAVAILABLE,
+        message: 'A required dependency is unavailable',
+      });
+    }
+
     return this.buildResponse();
   }
 
@@ -43,5 +59,22 @@ export class HealthController {
       uptimeSeconds: Math.round(process.uptime()),
       timestamp: new Date().toISOString(),
     };
+  }
+}
+
+async function withTimeout<Value>(promise: Promise<Value>, timeoutMs: number): Promise<Value> {
+  let timer: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Dependency check timed out')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
