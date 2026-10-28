@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 ENV HUSKY=0
 COPY package.json package-lock.json ./
@@ -12,13 +12,13 @@ COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:22-alpine AS production-deps
+FROM node:26-alpine AS production-deps
 WORKDIR /app
 ENV NODE_ENV=production HUSKY=0
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
