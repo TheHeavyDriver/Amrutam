@@ -43,7 +43,7 @@
     "env:secrets": "node scripts/generate-dev-secrets.mjs"
   },
   "dependencies": {
-    "@fastify/compress": "9.2.2",
+    "@fastify/compress": "9.3.0",
     "@fastify/cors": "11.3.1",
     "@fastify/helmet": "13.2.0",
     "@fastify/rate-limit": "11.2.1",
