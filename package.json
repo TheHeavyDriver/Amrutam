@@ -79,7 +79,7 @@
     "@nestjs/schematics": "12.0.10",
     "@nestjs/testing": "12.2.0",
     "@oazapfts/runtime": "1.2.0",
-    "@redocly/cli": "2.71.1",
+    "@redocly/cli": "2.76.0",
     "@swc/core": "1.16.20",
     "@types/node": "26.6.5",
     "@types/pg": "8.23.1",
